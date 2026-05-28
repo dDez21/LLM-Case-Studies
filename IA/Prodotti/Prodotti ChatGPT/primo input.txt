@@ -1,0 +1,182 @@
+import customtkinter as ctk
+from tkinter import messagebox
+
+
+NUTRITION_PER_100G = {
+    "mela": {"Calorie": 52, "Proteine": 0.3, "Lipidi": 0.2, "Sodio": 1, "Fibre": 2.4},
+    "banana": {"Calorie": 89, "Proteine": 1.1, "Lipidi": 0.3, "Sodio": 1, "Fibre": 2.6},
+    "riso": {"Calorie": 130, "Proteine": 2.7, "Lipidi": 0.3, "Sodio": 1, "Fibre": 0.4},
+    "pasta": {"Calorie": 131, "Proteine": 5.0, "Lipidi": 1.1, "Sodio": 6, "Fibre": 1.8},
+    "pollo": {"Calorie": 165, "Proteine": 31.0, "Lipidi": 3.6, "Sodio": 74, "Fibre": 0.0},
+    "salmone": {"Calorie": 208, "Proteine": 20.0, "Lipidi": 13.0, "Sodio": 59, "Fibre": 0.0},
+    "uovo": {"Calorie": 155, "Proteine": 13.0, "Lipidi": 11.0, "Sodio": 124, "Fibre": 0.0},
+    "latte": {"Calorie": 42, "Proteine": 3.4, "Lipidi": 1.0, "Sodio": 44, "Fibre": 0.0},
+    "yogurt": {"Calorie": 61, "Proteine": 3.5, "Lipidi": 3.3, "Sodio": 46, "Fibre": 0.0},
+    "pane": {"Calorie": 265, "Proteine": 9.0, "Lipidi": 3.2, "Sodio": 491, "Fibre": 2.7},
+    "patata": {"Calorie": 77, "Proteine": 2.0, "Lipidi": 0.1, "Sodio": 6, "Fibre": 2.2},
+    "pomodoro": {"Calorie": 18, "Proteine": 0.9, "Lipidi": 0.2, "Sodio": 5, "Fibre": 1.2},
+    "carota": {"Calorie": 41, "Proteine": 0.9, "Lipidi": 0.2, "Sodio": 69, "Fibre": 2.8},
+    "olio": {"Calorie": 884, "Proteine": 0.0, "Lipidi": 100.0, "Sodio": 2, "Fibre": 0.0},
+    "mandorle": {"Calorie": 579, "Proteine": 21.2, "Lipidi": 49.9, "Sodio": 1, "Fibre": 12.5},
+}
+
+NUTRIENTS = ("Calorie", "Proteine", "Lipidi", "Sodio", "Fibre")
+
+
+class NutritionCalculator(ctk.CTk):
+    def __init__(self):
+        super().__init__()
+        self.title("Calcolatore nutrizionale")
+        self.geometry("980x620")
+        self.minsize(840, 540)
+
+        ctk.set_appearance_mode("light")
+        ctk.set_default_color_theme("green")
+
+        self.ingredient_entries = []
+        self.quantity_entries = []
+        self.result_vars = {nutrient: ctk.StringVar(value="0.00") for nutrient in NUTRIENTS}
+
+        self._build_layout()
+
+    def _build_layout(self):
+        self.grid_columnconfigure(0, weight=1, uniform="main")
+        self.grid_columnconfigure(1, weight=1, uniform="main")
+        self.grid_rowconfigure(0, weight=1)
+
+        input_frame = ctk.CTkFrame(self, corner_radius=8)
+        input_frame.grid(row=0, column=0, padx=(18, 9), pady=18, sticky="nsew")
+        input_frame.grid_columnconfigure((0, 1), weight=1)
+
+        results_frame = ctk.CTkFrame(self, corner_radius=8)
+        results_frame.grid(row=0, column=1, padx=(9, 18), pady=18, sticky="nsew")
+        results_frame.grid_columnconfigure(0, weight=1)
+        results_frame.grid_rowconfigure(1, weight=1)
+
+        ctk.CTkLabel(
+            results_frame,
+            text="Totale valori nutrizionali",
+            font=ctk.CTkFont(size=22, weight="bold"),
+        ).grid(row=0, column=0, padx=20, pady=(20, 12), sticky="w")
+
+        self._build_input_area(input_frame)
+        self._build_results_table(results_frame)
+
+    def _build_results_table(self, parent):
+        table_frame = ctk.CTkFrame(parent, fg_color="transparent")
+        table_frame.grid(row=1, column=0, padx=20, pady=(0, 20), sticky="nsew")
+        table_frame.grid_columnconfigure(0, weight=1)
+        table_frame.grid_columnconfigure(1, weight=1)
+
+        header_style = ctk.CTkFont(size=15, weight="bold")
+        ctk.CTkLabel(table_frame, text="Valore", font=header_style).grid(
+            row=0, column=0, padx=10, pady=10, sticky="w"
+        )
+        ctk.CTkLabel(table_frame, text="Totale", font=header_style).grid(
+            row=0, column=1, padx=10, pady=10, sticky="e"
+        )
+
+        for row, nutrient in enumerate(NUTRIENTS, start=1):
+            unit = "kcal" if nutrient == "Calorie" else "mg" if nutrient == "Sodio" else "g"
+
+            ctk.CTkLabel(table_frame, text=nutrient, font=ctk.CTkFont(size=15)).grid(
+                row=row, column=0, padx=10, pady=12, sticky="w"
+            )
+            ctk.CTkLabel(
+                table_frame,
+                textvariable=self.result_vars[nutrient],
+                font=ctk.CTkFont(size=15, weight="bold"),
+            ).grid(row=row, column=1, padx=(10, 4), pady=12, sticky="e")
+            ctk.CTkLabel(table_frame, text=unit, font=ctk.CTkFont(size=13)).grid(
+                row=row, column=2, padx=(0, 10), pady=12, sticky="w"
+            )
+
+        ctk.CTkLabel(
+            parent,
+            text="Alimenti disponibili: " + ", ".join(sorted(NUTRITION_PER_100G)),
+            wraplength=380,
+            justify="left",
+            text_color="#4b5563",
+        ).grid(row=2, column=0, padx=20, pady=(0, 20), sticky="w")
+
+    def _build_input_area(self, parent):
+        ctk.CTkLabel(
+            parent,
+            text="Ingredienti",
+            font=ctk.CTkFont(size=22, weight="bold"),
+        ).grid(row=0, column=0, columnspan=2, padx=20, pady=(20, 12), sticky="w")
+
+        ctk.CTkLabel(parent, text="Ingrediente", font=ctk.CTkFont(weight="bold")).grid(
+            row=1, column=0, padx=(20, 8), pady=(0, 8), sticky="w"
+        )
+        ctk.CTkLabel(parent, text="Quantità (g)", font=ctk.CTkFont(weight="bold")).grid(
+            row=1, column=1, padx=(8, 20), pady=(0, 8), sticky="w"
+        )
+
+        for index in range(15):
+            ingredient_entry = ctk.CTkEntry(parent, placeholder_text=f"Ingrediente {index + 1}")
+            ingredient_entry.grid(row=index + 2, column=0, padx=(20, 8), pady=5, sticky="ew")
+
+            quantity_entry = ctk.CTkEntry(parent, placeholder_text="0")
+            quantity_entry.grid(row=index + 2, column=1, padx=(8, 20), pady=5, sticky="ew")
+
+            self.ingredient_entries.append(ingredient_entry)
+            self.quantity_entries.append(quantity_entry)
+
+        ctk.CTkButton(
+            parent,
+            text="Calcola valori nutrizionali",
+            command=self.calculate_totals,
+            height=42,
+            font=ctk.CTkFont(size=15, weight="bold"),
+        ).grid(row=17, column=0, columnspan=2, padx=20, pady=(18, 20), sticky="ew")
+
+    def calculate_totals(self):
+        totals = {nutrient: 0.0 for nutrient in NUTRIENTS}
+        unknown_ingredients = []
+
+        for ingredient_entry, quantity_entry in zip(self.ingredient_entries, self.quantity_entries):
+            ingredient = ingredient_entry.get().strip().lower()
+            quantity_text = quantity_entry.get().strip().replace(",", ".")
+
+            if not ingredient and not quantity_text:
+                continue
+
+            if not ingredient or not quantity_text:
+                messagebox.showerror("Dati incompleti", "Compila sia Ingrediente sia Quantità.")
+                return
+
+            try:
+                quantity = float(quantity_text)
+            except ValueError:
+                messagebox.showerror("Quantità non valida", f"La quantità di '{ingredient}' non è un numero.")
+                return
+
+            if quantity < 0:
+                messagebox.showerror("Quantità non valida", "Inserisci quantità maggiori o uguali a zero.")
+                return
+
+            nutrition = NUTRITION_PER_100G.get(ingredient)
+            if nutrition is None:
+                unknown_ingredients.append(ingredient)
+                continue
+
+            multiplier = quantity / 100
+            for nutrient in NUTRIENTS:
+                totals[nutrient] += nutrition[nutrient] * multiplier
+
+        for nutrient, total in totals.items():
+            self.result_vars[nutrient].set(f"{total:.2f}")
+
+        if unknown_ingredients:
+            messagebox.showwarning(
+                "Ingredienti non trovati",
+                "Non ho trovato questi alimenti nel dizionario locale: "
+                + ", ".join(sorted(set(unknown_ingredients)))
+                + ". Puoi aggiungerli in NUTRITION_PER_100G.",
+            )
+
+
+if __name__ == "__main__":
+    app = NutritionCalculator()
+    app.mainloop()

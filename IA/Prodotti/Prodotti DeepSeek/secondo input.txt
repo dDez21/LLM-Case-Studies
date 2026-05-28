@@ -1,0 +1,206 @@
+import customtkinter as ctk
+import math
+
+# ------------------------------------------------------------
+# Database alimenti (valori per 100 g)
+# ------------------------------------------------------------
+FOOD_DB = {
+    "pasta":        {"calorie": 350, "proteine": 12.0, "lipidi": 1.5, "sodio": 5,    "fibre": 3.0},
+    "riso":         {"calorie": 360, "proteine": 7.0,  "lipidi": 0.6, "sodio": 5,    "fibre": 1.0},
+    "pane":         {"calorie": 265, "proteine": 9.0,  "lipidi": 3.2, "sodio": 490,  "fibre": 2.7},
+    "latte":        {"calorie": 61,  "proteine": 3.2,  "lipidi": 3.3, "sodio": 44,   "fibre": 0.0},
+    "uova":         {"calorie": 143, "proteine": 12.6, "lipidi": 9.5, "sodio": 142,  "fibre": 0.0},
+    "pollo":        {"calorie": 165, "proteine": 31.0, "lipidi": 3.6, "sodio": 74,   "fibre": 0.0},
+    "salmone":      {"calorie": 208, "proteine": 20.0, "lipidi": 13.0,"sodio": 59,   "fibre": 0.0},
+    "mela":         {"calorie": 52,  "proteine": 0.3,  "lipidi": 0.2, "sodio": 1,    "fibre": 2.4},
+    "pomodoro":     {"calorie": 18,  "proteine": 0.9,  "lipidi": 0.2, "sodio": 5,    "fibre": 1.2},
+    "formaggio":    {"calorie": 431, "proteine": 38.0, "lipidi": 29.0,"sodio": 1529, "fibre": 0.0},
+    "olio d'oliva": {"calorie": 884, "proteine": 0.0,  "lipidi": 100.0,"sodio": 0,   "fibre": 0.0},
+    "broccoli":     {"calorie": 34,  "proteine": 2.8,  "lipidi": 0.4, "sodio": 33,   "fibre": 2.6},
+    "patate":       {"calorie": 77,  "proteine": 2.0,  "lipidi": 0.1, "sodio": 6,    "fibre": 1.8},
+    "yogurt":       {"calorie": 63,  "proteine": 5.3,  "lipidi": 3.3, "sodio": 46,   "fibre": 0.0}
+}
+
+
+class NutritionCalculator(ctk.CTk):
+    def __init__(self):
+        super().__init__()
+        self.title("Calcolatore Valori Nutrizionali")
+        self.geometry("950x650")
+        ctk.set_appearance_mode("system")
+        ctk.set_default_color_theme("blue")
+
+        # Layout a due colonne
+        self.left_frame = ctk.CTkFrame(self, width=450)
+        self.left_frame.pack(side="left", fill="both", expand=True, padx=10, pady=10)
+
+        self.right_frame = ctk.CTkFrame(self, width=400)
+        self.right_frame.pack(side="right", fill="both", expand=True, padx=10, pady=10)
+
+        self.build_left_panel()
+        self.build_right_panel()
+
+    def build_left_panel(self):
+        """Pannello sinistro: titolo, pulsante '+' e area scorrevole per le righe."""
+        # Titolo
+        ctk.CTkLabel(
+            self.left_frame,
+            text="Inserisci gli alimenti (max 15)",
+            font=("Arial", 16, "bold")
+        ).pack(pady=(10, 5))
+
+        # Pulsante per aggiungere un nuovo alimento
+        self.add_button = ctk.CTkButton(
+            self.left_frame,
+            text="+ Aggiungi alimento",
+            command=self.add_ingredient_row,
+            height=35,
+            font=("Arial", 13)
+        )
+        self.add_button.pack(pady=(5, 5))
+
+        # Contenitore scorrevole per le righe (inizialmente vuoto)
+        self.scroll_frame = ctk.CTkScrollableFrame(self.left_frame, width=420, height=400)
+        self.scroll_frame.pack(fill="both", expand=True, padx=5, pady=5)
+
+        # Liste per memorizzare i widget di input (si popolano dinamicamente)
+        self.ingredient_entries = []
+        self.quantity_entries = []
+
+        # Pulsante per il calcolo
+        self.calc_button = ctk.CTkButton(
+            self.left_frame,
+            text="Calcola valori nutrizionali",
+            command=self.calculate,
+            height=40,
+            font=("Arial", 14, "bold")
+        )
+        self.calc_button.pack(pady=(5, 10))
+
+    def add_ingredient_row(self):
+        """Aggiunge una nuova riga di input (fino a 15)."""
+        if len(self.ingredient_entries) >= 15:
+            # Raggiunto il massimo: disabilita il pulsante
+            self.add_button.configure(state="disabled", text="Massimo 15 alimenti")
+            return
+
+        # Crea un frame per la riga
+        row_frame = ctk.CTkFrame(self.scroll_frame)
+        row_frame.pack(fill="x", padx=5, pady=2)
+
+        # Numero progressivo
+        num = len(self.ingredient_entries) + 1
+        ctk.CTkLabel(row_frame, text=f"{num}.", width=30).pack(side="left", padx=5)
+
+        # Campo ingrediente
+        ing_entry = ctk.CTkEntry(row_frame, placeholder_text="Ingrediente", width=180)
+        ing_entry.pack(side="left", padx=5)
+
+        # Campo quantità (grammi)
+        qty_entry = ctk.CTkEntry(row_frame, placeholder_text="Quantità (g)", width=100)
+        qty_entry.pack(side="left", padx=5)
+
+        # Aggiunge i widget alle liste per la lettura successiva
+        self.ingredient_entries.append(ing_entry)
+        self.quantity_entries.append(qty_entry)
+
+        # Se dopo questa aggiunta si arriva a 15, disabilita il pulsante
+        if len(self.ingredient_entries) == 15:
+            self.add_button.configure(state="disabled", text="Massimo 15 alimenti")
+
+    def build_right_panel(self):
+        """Pannello destro: tabella dei risultati."""
+        ctk.CTkLabel(
+            self.right_frame,
+            text="Valori Nutrizionali Totali",
+            font=("Arial", 16, "bold")
+        ).pack(pady=10)
+
+        table_frame = ctk.CTkFrame(self.right_frame)
+        table_frame.pack(fill="both", expand=True, padx=10, pady=10)
+
+        # Intestazioni e valori (le etichette verranno aggiornate)
+        nutrients = [
+            ("Calorie (kcal)", "calorie"),
+            ("Proteine (g)",   "proteine"),
+            ("Lipidi (g)",     "lipidi"),
+            ("Sodio (mg)",     "sodio"),
+            ("Fibre (g)",      "fibre")
+        ]
+
+        self.value_labels = {}
+
+        for i, (name, key) in enumerate(nutrients):
+            lbl_name = ctk.CTkLabel(table_frame, text=name, font=("Arial", 14))
+            lbl_name.grid(row=i, column=0, padx=15, pady=8, sticky="w")
+
+            lbl_value = ctk.CTkLabel(table_frame, text="0", font=("Arial", 14, "bold"))
+            lbl_value.grid(row=i, column=1, padx=15, pady=8, sticky="e")
+
+            self.value_labels[key] = lbl_value
+
+        # Etichetta per messaggi di errore / conferma
+        self.message_label = ctk.CTkLabel(self.right_frame, text="", text_color="red")
+        self.message_label.pack(pady=(5, 10))
+
+    def calculate(self):
+        """Legge gli input, cerca gli alimenti e aggiorna i totali (arrotondati per eccesso)."""
+        self.message_label.configure(text="")
+        totals = {"calorie": 0.0, "proteine": 0.0, "lipidi": 0.0, "sodio": 0.0, "fibre": 0.0}
+        found_any = False
+
+        # Scorre tutte le righe attualmente presenti
+        for ing_entry, qty_entry in zip(self.ingredient_entries, self.quantity_entries):
+            ing = ing_entry.get().strip()
+            qty_str = qty_entry.get().strip()
+
+            # Salta righe completamente vuote
+            if not ing and not qty_str:
+                continue
+
+            # Entrambi i campi devono essere compilati
+            if not ing or not qty_str:
+                self.message_label.configure(text="Completa entrambi i campi per ogni alimento inserito.")
+                return
+
+            # Validazione quantità
+            try:
+                qty = float(qty_str)
+                if qty <= 0:
+                    self.message_label.configure(text="La quantità deve essere un numero positivo.")
+                    return
+            except ValueError:
+                self.message_label.configure(text="Inserisci una quantità numerica valida (grammi).")
+                return
+
+            # Ricerca alimento (case‑insensitive)
+            food = FOOD_DB.get(ing.lower())
+            if food is None:
+                self.message_label.configure(text=f"Alimento '{ing}' non presente nel database.")
+                return
+
+            # Somma proporzionale alla quantità
+            factor = qty / 100.0
+            for key in totals:
+                totals[key] += food[key] * factor
+
+            found_any = True
+
+        if not found_any:
+            self.message_label.configure(text="Inserisci almeno un alimento per eseguire il calcolo.")
+            return
+
+        # Arrotondamento per eccesso (math.ceil) su ogni valore
+        for key in totals:
+            totals[key] = math.ceil(totals[key])
+
+        # Aggiorna le etichette con i numeri interi
+        for key, lbl in self.value_labels.items():
+            lbl.configure(text=str(int(totals[key])))
+
+        self.message_label.configure(text="Calcolo completato con successo.", text_color="green")
+
+
+if __name__ == "__main__":
+    app = NutritionCalculator()
+    app.mainloop()

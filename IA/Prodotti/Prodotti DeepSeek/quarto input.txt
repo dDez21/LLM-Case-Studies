@@ -1,0 +1,256 @@
+import customtkinter as ctk
+import math
+
+# ------------------------------------------------------------
+# Database alimenti (valori per 100 g)
+# ------------------------------------------------------------
+FOOD_DB = {
+    "pasta":        {"calorie": 350, "proteine": 12.0, "lipidi": 1.5, "sodio": 5,    "fibre": 3.0},
+    "riso":         {"calorie": 360, "proteine": 7.0,  "lipidi": 0.6, "sodio": 5,    "fibre": 1.0},
+    "pane":         {"calorie": 265, "proteine": 9.0,  "lipidi": 3.2, "sodio": 490,  "fibre": 2.7},
+    "latte":        {"calorie": 61,  "proteine": 3.2,  "lipidi": 3.3, "sodio": 44,   "fibre": 0.0},
+    "uova":         {"calorie": 143, "proteine": 12.6, "lipidi": 9.5, "sodio": 142,  "fibre": 0.0},
+    "pollo":        {"calorie": 165, "proteine": 31.0, "lipidi": 3.6, "sodio": 74,   "fibre": 0.0},
+    "salmone":      {"calorie": 208, "proteine": 20.0, "lipidi": 13.0,"sodio": 59,   "fibre": 0.0},
+    "mela":         {"calorie": 52,  "proteine": 0.3,  "lipidi": 0.2, "sodio": 1,    "fibre": 2.4},
+    "pomodoro":     {"calorie": 18,  "proteine": 0.9,  "lipidi": 0.2, "sodio": 5,    "fibre": 1.2},
+    "formaggio":    {"calorie": 431, "proteine": 38.0, "lipidi": 29.0,"sodio": 1529, "fibre": 0.0},
+    "olio d'oliva": {"calorie": 884, "proteine": 0.0,  "lipidi": 100.0,"sodio": 0,   "fibre": 0.0},
+    "broccoli":     {"calorie": 34,  "proteine": 2.8,  "lipidi": 0.4, "sodio": 33,   "fibre": 2.6},
+    "patate":       {"calorie": 77,  "proteine": 2.0,  "lipidi": 0.1, "sodio": 6,    "fibre": 1.8},
+    "yogurt":       {"calorie": 63,  "proteine": 5.3,  "lipidi": 3.3, "sodio": 46,   "fibre": 0.0}
+}
+
+
+class NutritionCalculator(ctk.CTk):
+    def __init__(self):
+        super().__init__()
+        self.title("Calcolatore Valori Nutrizionali")
+        self.geometry("950x650")
+
+        # ----- TEMA SCURO -----
+        ctk.set_appearance_mode("dark")
+        ctk.set_default_color_theme("dark-blue")
+
+        # Layout a due colonne
+        self.left_frame = ctk.CTkFrame(self, width=450)
+        self.left_frame.pack(side="left", fill="both", expand=True, padx=10, pady=10)
+
+        self.right_frame = ctk.CTkFrame(self, width=400)
+        self.right_frame.pack(side="right", fill="both", expand=True, padx=10, pady=10)
+
+        self.build_left_panel()
+        self.build_right_panel()
+
+    def build_left_panel(self):
+        """Pannello sinistro con righe dinamiche e pulsanti."""
+        # Titolo
+        ctk.CTkLabel(
+            self.left_frame,
+            text="Inserisci gli alimenti (max 15)",
+            font=("Arial", 16, "bold")
+        ).pack(pady=(10, 5))
+
+        # Area scorrevole per le righe
+        self.scroll_frame = ctk.CTkScrollableFrame(self.left_frame, width=420, height=400)
+        self.scroll_frame.pack(fill="both", expand=True, padx=5, pady=5)
+
+        # Liste per i widget
+        self.ingredient_entries = []
+        self.quantity_entries = []
+        self.row_frames = []
+        self.number_labels = []
+
+        # Contenitore per il pulsante "+ Aggiungi alimento" centrato in fondo
+        bottom_frame = ctk.CTkFrame(self.scroll_frame, fg_color="transparent")
+        bottom_frame.pack(side="bottom", fill="x", padx=0, pady=(5, 10))
+
+        self.add_button = ctk.CTkButton(
+            bottom_frame,
+            text="+ Aggiungi alimento",
+            command=self.add_ingredient_row,
+            width=120,
+            height=28,
+            font=("Arial", 11),
+            fg_color="#2e8b57",      # verde scuro
+            hover_color="#1f6d3d"
+        )
+        self.add_button.pack(expand=True)   # centrato orizzontalmente
+
+        # Pulsante per il calcolo (fuori dallo scroll)
+        self.calc_button = ctk.CTkButton(
+            self.left_frame,
+            text="Calcola valori nutrizionali",
+            command=self.calculate,
+            height=38,
+            font=("Arial", 14, "bold"),
+            fg_color="#1f538d",      # blu scuro
+            hover_color="#14375e"
+        )
+        self.calc_button.pack(pady=(5, 10))
+
+    def add_ingredient_row(self):
+        """Aggiunge una nuova riga di input (fino a 15)."""
+        if len(self.ingredient_entries) >= 15:
+            self.add_button.configure(state="disabled", text="Massimo 15 alimenti")
+            return
+
+        # Frame della riga
+        row_frame = ctk.CTkFrame(self.scroll_frame)
+        row_frame.pack(fill="x", padx=5, pady=2, before=self.add_button.master)
+
+        # Numero progressivo
+        num = len(self.ingredient_entries) + 1
+        num_label = ctk.CTkLabel(row_frame, text=f"{num}.", width=30)
+        num_label.pack(side="left", padx=5)
+
+        # Campo ingrediente
+        ing_entry = ctk.CTkEntry(row_frame, placeholder_text="Ingrediente", width=160)
+        ing_entry.pack(side="left", padx=5)
+
+        # Campo quantità
+        qty_entry = ctk.CTkEntry(row_frame, placeholder_text="Quantità (g)", width=80)
+        qty_entry.pack(side="left", padx=5)
+
+        # Pulsante rimuovi con icona cestino
+        remove_btn = ctk.CTkButton(
+            row_frame,
+            text="🗑️",
+            width=30,
+            height=30,
+            fg_color="#a94442",
+            hover_color="#843534",
+            command=lambda f=row_frame: self.remove_row(f)
+        )
+        remove_btn.pack(side="right", padx=5)
+
+        # Salva i riferimenti
+        self.ingredient_entries.append(ing_entry)
+        self.quantity_entries.append(qty_entry)
+        self.row_frames.append(row_frame)
+        self.number_labels.append(num_label)
+
+        if len(self.ingredient_entries) == 15:
+            self.add_button.configure(state="disabled", text="Massimo 15 alimenti")
+
+    def remove_row(self, frame):
+        """Rimuove una riga e aggiorna la numerazione."""
+        try:
+            idx = self.row_frames.index(frame)
+        except ValueError:
+            return
+
+        del self.ingredient_entries[idx]
+        del self.quantity_entries[idx]
+        del self.row_frames[idx]
+        del self.number_labels[idx]
+        frame.destroy()
+
+        for i in range(idx, len(self.number_labels)):
+            self.number_labels[i].configure(text=f"{i+1}.")
+
+        if len(self.ingredient_entries) < 15:
+            self.add_button.configure(state="normal", text="+ Aggiungi alimento")
+
+    def build_right_panel(self):
+        """Pannello destro con la tabella dei risultati in stile migliorato."""
+        ctk.CTkLabel(
+            self.right_frame,
+            text="Valori Nutrizionali Totali",
+            font=("Arial", 16, "bold")
+        ).pack(pady=(10, 15))
+
+        # Box con sfondo più chiaro per racchiudere i valori
+        table_box = ctk.CTkFrame(
+            self.right_frame,
+            fg_color="#2b2b2b",      # grigio scuro leggermente diverso dallo sfondo
+            corner_radius=10,
+            border_width=1,
+            border_color="#4a4a4a"
+        )
+        table_box.pack(fill="x", padx=15, pady=0, ipady=10)
+
+        # Etichette dei nutrienti e valori
+        nutrients = [
+            ("Calorie (kcal)", "calorie"),
+            ("Proteine (g)",   "proteine"),
+            ("Lipidi (g)",     "lipidi"),
+            ("Sodio (mg)",     "sodio"),
+            ("Fibre (g)",      "fibre")
+        ]
+
+        self.value_labels = {}
+        for i, (name, key) in enumerate(nutrients):
+            # Nome del nutriente
+            lbl_name = ctk.CTkLabel(table_box, text=name, font=("Arial", 14), anchor="w")
+            lbl_name.grid(row=i, column=0, padx=(20, 10), pady=10, sticky="w")
+
+            # Valore (inizialmente a 0)
+            lbl_value = ctk.CTkLabel(table_box, text="0", font=("Arial", 16, "bold"), anchor="e")
+            lbl_value.grid(row=i, column=1, padx=(10, 20), pady=10, sticky="e")
+
+            self.value_labels[key] = lbl_value
+
+        # Messaggio di stato
+        self.message_label = ctk.CTkLabel(
+            self.right_frame,
+            text="",
+            text_color="#66bb6a",   # verde chiaro per i successi
+            font=("Arial", 12)
+        )
+        self.message_label.pack(pady=(15, 5))
+
+    def calculate(self):
+        """Calcola i totali nutrizionali con arrotondamento per eccesso."""
+        self.message_label.configure(text="")
+        totals = {"calorie": 0.0, "proteine": 0.0, "lipidi": 0.0, "sodio": 0.0, "fibre": 0.0}
+        found_any = False
+
+        for ing_entry, qty_entry in zip(self.ingredient_entries, self.quantity_entries):
+            ing = ing_entry.get().strip()
+            qty_str = qty_entry.get().strip()
+
+            if not ing and not qty_str:
+                continue
+
+            if not ing or not qty_str:
+                self.message_label.configure(text="Completa entrambi i campi per ogni alimento inserito.", text_color="#f0ad4e")
+                return
+
+            try:
+                qty = float(qty_str)
+                if qty <= 0:
+                    self.message_label.configure(text="La quantità deve essere un numero positivo.", text_color="#f0ad4e")
+                    return
+            except ValueError:
+                self.message_label.configure(text="Inserisci una quantità numerica valida (grammi).", text_color="#f0ad4e")
+                return
+
+            food = FOOD_DB.get(ing.lower())
+            if food is None:
+                self.message_label.configure(text=f"Alimento '{ing}' non presente nel database.", text_color="#f0ad4e")
+                return
+
+            factor = qty / 100.0
+            for key in totals:
+                totals[key] += food[key] * factor
+
+            found_any = True
+
+        if not found_any:
+            self.message_label.configure(text="Inserisci almeno un alimento per eseguire il calcolo.", text_color="#f0ad4e")
+            return
+
+        # Arrotondamento per eccesso
+        for key in totals:
+            totals[key] = math.ceil(totals[key])
+
+        for key, lbl in self.value_labels.items():
+            lbl.configure(text=str(int(totals[key])))
+
+        self.message_label.configure(text="✓ Calcolo completato con successo.", text_color="#66bb6a")
+
+
+if __name__ == "__main__":
+    app = NutritionCalculator()
+    app.mainloop()

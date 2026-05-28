@@ -1,0 +1,547 @@
+import math
+import customtkinter as ctk
+
+# ─── Theme ────────────────────────────────────────────────────────────────────
+ctk.set_appearance_mode("dark")
+ctk.set_default_color_theme("blue")
+
+COLORS = {
+    "bg_panel":     "#1a1d2e",
+    "bg_row_even":  "#22253a",
+    "bg_row_odd":   "#1e2133",
+    "bg_header":    "#2d5be3",
+    "bg_total":     "#1b3fa0",
+    "accent":       "#2d5be3",
+    "accent_hover": "#3d6ef3",
+    "add_btn":      "#1a4a2e",
+    "add_btn_hov":  "#215c38",
+    "del_btn":      "#4a1a1a",
+    "del_btn_hov":  "#6b2020",
+    "success":      "#22c55e",
+    "warning":      "#f59e0b",
+    "error":        "#ef4444",
+    "text_primary": "#e8eaf6",
+    "text_secondary":"#8892b0",
+    "border":       "#2d3561",
+}
+
+# ─── Database nutrizionale (valori per 100 g) ─────────────────────────────────
+# Chiavi in minuscolo per ricerca case-insensitive
+# Struttura: { nome: (calorie_kcal, proteine_g, lipidi_g, sodio_mg, fibre_g) }
+NUTRIENT_DB: dict[str, tuple[float, float, float, float, float]] = {
+    # Carni e pesce
+    "pollo petto":          (110.0,  23.1,  1.2,   70.0,  0.0),
+    "pollo":                (110.0,  23.1,  1.2,   70.0,  0.0),
+    "manzo macinato":       (254.0,  17.2, 20.0,   72.0,  0.0),
+    "manzo":                (250.0,  26.0, 15.0,   60.0,  0.0),
+    "salmone":              (208.0,  20.4, 13.4,   59.0,  0.0),
+    "tonno in scatola":     (116.0,  25.5,  0.8,  400.0,  0.0),
+    "tonno":                (144.0,  23.3,  4.9,   47.0,  0.0),
+    "merluzzo":             ( 82.0,  17.8,  0.7,   54.0,  0.0),
+    "prosciutto cotto":     (136.0,  18.4,  5.9,  950.0,  0.0),
+    "prosciutto crudo":     (145.0,  25.0,  4.8, 2700.0,  0.0),
+    "pancetta":             (460.0,  13.0, 45.0, 1717.0,  0.0),
+    "uovo intero":          (155.0,  13.0, 11.0,  124.0,  0.0),
+    "uova":                 (155.0,  13.0, 11.0,  124.0,  0.0),
+    "albume":               ( 52.0,  10.9,  0.2,  166.0,  0.0),
+    # Cereali e derivati
+    "riso bianco cotto":    (130.0,   2.7,  0.3,    1.0,  0.4),
+    "riso":                 (130.0,   2.7,  0.3,    1.0,  0.4),
+    "pasta cotta":          (157.0,   5.8,  0.9,    1.0,  1.8),
+    "pasta":                (157.0,   5.8,  0.9,    1.0,  1.8),
+    "pane bianco":          (265.0,   8.9,  3.2,  491.0,  2.7),
+    "pane integrale":       (247.0,   9.0,  3.5,  400.0,  6.8),
+    "farina 00":            (364.0,  10.5,  0.9,    2.0,  2.7),
+    "avena":                (389.0,  17.0,  7.0,    2.0, 10.6),
+    "fiocchi di avena":     (389.0,  17.0,  7.0,    2.0, 10.6),
+    "quinoa cotta":         (120.0,   4.4,  1.9,    7.0,  2.8),
+    "farro cotto":          (150.0,   6.0,  1.0,    5.0,  3.5),
+    "mais":                 ( 86.0,   3.3,  1.4,   15.0,  2.7),
+    # Legumi
+    "ceci cotti":           (164.0,   8.9,  2.6,    7.0,  7.6),
+    "lenticchie cotte":     (116.0,   9.0,  0.4,    2.0,  7.9),
+    "fagioli borlotti":     (133.0,   8.7,  0.5,    5.0,  6.0),
+    "fagioli cannellini":   (120.0,   8.3,  0.4,    5.0,  5.5),
+    "soia":                 (446.0,  36.5, 19.9,    2.0,  9.3),
+    "piselli":              ( 81.0,   5.4,  0.4,    5.0,  5.1),
+    "edamame":              (122.0,  10.9,  5.2,   63.0,  5.2),
+    # Latticini
+    "latte intero":         ( 61.0,   3.2,  3.3,   43.0,  0.0),
+    "latte":                ( 61.0,   3.2,  3.3,   43.0,  0.0),
+    "latte scremato":       ( 34.0,   3.4,  0.1,   52.0,  0.0),
+    "yogurt bianco":        ( 59.0,   3.5,  3.3,   36.0,  0.0),
+    "yogurt greco":         ( 97.0,   9.0,  5.0,   36.0,  0.0),
+    "mozzarella":           (254.0,  17.1, 19.9,  466.0,  0.0),
+    "parmigiano":           (392.0,  33.0, 28.0,  614.0,  0.0),
+    "grana padano":         (384.0,  33.0, 26.0,  650.0,  0.0),
+    "ricotta":              (146.0,   9.5, 10.9,   84.0,  0.0),
+    "burro":                (717.0,   0.9, 81.0,  576.0,  0.0),
+    # Verdure
+    "broccoli":             ( 34.0,   2.8,  0.4,   33.0,  2.6),
+    "spinaci":              ( 23.0,   2.9,  0.4,   79.0,  2.2),
+    "zucchine":             ( 17.0,   1.2,  0.3,    8.0,  1.0),
+    "carote":               ( 41.0,   0.9,  0.2,   69.0,  2.8),
+    "pomodori":             ( 18.0,   0.9,  0.2,    5.0,  1.2),
+    "pomodoro":             ( 18.0,   0.9,  0.2,    5.0,  1.2),
+    "insalata":             ( 15.0,   1.4,  0.2,   28.0,  1.3),
+    "lattuga":              ( 15.0,   1.4,  0.2,   28.0,  1.3),
+    "cetriolo":             ( 16.0,   0.7,  0.1,    2.0,  0.5),
+    "peperone":             ( 31.0,   1.0,  0.3,    4.0,  2.1),
+    "melanzane":            ( 25.0,   1.0,  0.2,    2.0,  3.0),
+    "cipolla":              ( 40.0,   1.1,  0.1,    4.0,  1.7),
+    "aglio":                (149.0,   6.4,  0.5,   17.0,  2.1),
+    "patate":               ( 77.0,   2.0,  0.1,    6.0,  2.2),
+    "funghi":               ( 22.0,   3.1,  0.3,    5.0,  1.0),
+    "cavolfiore":           ( 25.0,   1.9,  0.3,   30.0,  2.0),
+    "cavolo":               ( 25.0,   1.3,  0.1,   18.0,  2.5),
+    "asparagi":             ( 20.0,   2.2,  0.1,    2.0,  2.1),
+    "carciofi":             ( 47.0,   3.3,  0.2,   94.0,  5.4),
+    # Frutta
+    "mela":                 ( 52.0,   0.3,  0.2,    1.0,  2.4),
+    "banana":               ( 89.0,   1.1,  0.3,    1.0,  2.6),
+    "arancia":              ( 47.0,   0.9,  0.1,    0.0,  2.4),
+    "fragole":              ( 32.0,   0.7,  0.3,    1.0,  2.0),
+    "uva":                  ( 69.0,   0.7,  0.2,    2.0,  0.9),
+    "kiwi":                 ( 61.0,   1.1,  0.5,    3.0,  3.0),
+    "pera":                 ( 57.0,   0.4,  0.1,    1.0,  3.1),
+    "pesca":                ( 39.0,   0.9,  0.3,    0.0,  1.5),
+    "anguria":              ( 30.0,   0.6,  0.2,    1.0,  0.4),
+    "limone":               ( 29.0,   1.1,  0.3,    2.0,  2.8),
+    "avocado":              (160.0,   2.0, 14.7,    7.0,  6.7),
+    # Grassi e condimenti
+    "olio di oliva":        (884.0,   0.0, 100.0,   0.0,  0.0),
+    "olio":                 (884.0,   0.0, 100.0,   0.0,  0.0),
+    "olio evo":             (884.0,   0.0, 100.0,   0.0,  0.0),
+    "sale":                 (  0.0,   0.0,  0.0, 38758.0, 0.0),
+    "zucchero":             (387.0,   0.0,  0.0,    1.0,  0.0),
+    "miele":                (304.0,   0.3,  0.0,    4.0,  0.2),
+    "aceto":                ( 21.0,   0.0,  0.0,    5.0,  0.0),
+    # Frutta secca e semi
+    "mandorle":             (579.0,  21.2, 49.9,    1.0, 12.5),
+    "noci":                 (654.0,  15.2, 65.2,    2.0,  6.7),
+    "nocciole":             (628.0,  15.0, 60.8,    0.0,  9.7),
+    "arachidi":             (567.0,  25.8, 49.2,   18.0,  8.5),
+    "semi di chia":         (486.0,  16.5, 30.7,   16.0, 34.4),
+    "semi di lino":         (534.0,  18.3, 42.2,   30.0, 27.3),
+    "semi di girasole":     (584.0,  20.8, 51.5,    9.0,  8.6),
+    # Altro
+    "cioccolato fondente":  (598.0,   5.5, 42.6,   20.0, 10.9),
+    "cioccolato":           (535.0,   7.8, 31.0,   79.0,  3.4),
+    "nutella":              (539.0,   6.3, 30.9,   57.0,  3.4),
+    "tofu":                 ( 76.0,   8.0,  4.8,    7.0,  0.3),
+    "seitan":               (370.0,  75.0,  1.9,  120.0,  0.6),
+}
+
+
+def ceil2(value: float) -> float:
+    """Arrotondamento per eccesso ai centesimi."""
+    return math.ceil(value * 100) / 100
+
+
+def lookup(name: str, qty_g: float) -> dict | None:
+    """Cerca l'ingrediente nel DB e scala i valori alla quantità indicata."""
+    key = name.strip().lower()
+    # Ricerca esatta
+    if key in NUTRIENT_DB:
+        data = NUTRIENT_DB[key]
+        factor = qty_g / 100.0
+        return {
+            "name":     name.strip(),
+            "quantity": qty_g,
+            "calories": ceil2(data[0] * factor),
+            "proteins": ceil2(data[1] * factor),
+            "lipids":   ceil2(data[2] * factor),
+            "sodium":   ceil2(data[3] * factor),
+            "fibers":   ceil2(data[4] * factor),
+        }
+    # Ricerca parziale (il nome del DB è contenuto nell'input o viceversa)
+    for db_key, data in NUTRIENT_DB.items():
+        if db_key in key or key in db_key:
+            factor = qty_g / 100.0
+            return {
+                "name":     name.strip(),
+                "quantity": qty_g,
+                "calories": ceil2(data[0] * factor),
+                "proteins": ceil2(data[1] * factor),
+                "lipids":   ceil2(data[2] * factor),
+                "sodium":   ceil2(data[3] * factor),
+                "fibers":   ceil2(data[4] * factor),
+            }
+    return None
+
+
+# ─── Main Application ─────────────────────────────────────────────────────────
+class NutritionalCalculator(ctk.CTk):
+    def __init__(self):
+        super().__init__()
+        self.title("🥗 Calcolatore Nutrizionale")
+        self.geometry("1280x780")
+        self.minsize(1000, 600)
+        self.configure(fg_color="#13152a")
+
+        # Each item: (row_frame, ing_entry, qty_entry)
+        self.ingredient_rows: list[tuple[ctk.CTkFrame, ctk.CTkEntry, ctk.CTkEntry]] = []
+
+        self._build_layout()
+
+    # ── Layout ────────────────────────────────────────────────────────────────
+    def _build_layout(self):
+        self.grid_columnconfigure(0, weight=4, minsize=380)
+        self.grid_columnconfigure(1, weight=6, minsize=460)
+        self.grid_rowconfigure(0, weight=1)
+        self._build_left_panel()
+        self._build_right_panel()
+
+    # ── Left panel ────────────────────────────────────────────────────────────
+    def _build_left_panel(self):
+        outer = ctk.CTkFrame(self, fg_color=COLORS["bg_panel"],
+                             corner_radius=16, border_width=1,
+                             border_color=COLORS["border"])
+        outer.grid(row=0, column=0, padx=(14, 7), pady=14, sticky="nsew")
+        outer.grid_rowconfigure(1, weight=1)
+        outer.grid_columnconfigure(0, weight=1)
+
+        # Title
+        title_bar = ctk.CTkFrame(outer, fg_color="transparent")
+        title_bar.grid(row=0, column=0, sticky="ew", padx=18, pady=(18, 6))
+        ctk.CTkLabel(
+            title_bar, text="🧾  Ingredienti",
+            font=ctk.CTkFont("Segoe UI", 17, "bold"),
+            text_color=COLORS["text_primary"]
+        ).pack(side="left")
+        self.count_lbl = ctk.CTkLabel(
+            title_bar, text="0 / 15",
+            font=ctk.CTkFont("Segoe UI", 11),
+            text_color=COLORS["text_secondary"]
+        )
+        self.count_lbl.pack(side="right")
+
+        # Scrollable list
+        self.scroll = ctk.CTkScrollableFrame(
+            outer, fg_color="transparent",
+            scrollbar_button_color=COLORS["accent"],
+            scrollbar_button_hover_color=COLORS["accent_hover"]
+        )
+        self.scroll.grid(row=1, column=0, sticky="nsew", padx=10, pady=4)
+        self.scroll.grid_columnconfigure(0, weight=0)   # numero
+        self.scroll.grid_columnconfigure(1, weight=3)   # ingrediente
+        self.scroll.grid_columnconfigure(2, weight=2)   # quantità
+        self.scroll.grid_columnconfigure(3, weight=0)   # elimina
+
+        # Column headers
+        for col, txt in enumerate(["#", "Ingrediente", "Qtà (g)", ""]):
+            ctk.CTkLabel(
+                self.scroll, text=txt,
+                font=ctk.CTkFont("Segoe UI", 12, "bold"),
+                text_color=COLORS["text_secondary"]
+            ).grid(row=0, column=col, padx=(6, 4), pady=(4, 8), sticky="w")
+
+        # Bottom buttons
+        bottom = ctk.CTkFrame(outer, fg_color="transparent")
+        bottom.grid(row=2, column=0, sticky="ew", padx=18, pady=(8, 18))
+        bottom.grid_columnconfigure(0, weight=1)
+        bottom.grid_columnconfigure(1, weight=1)
+
+        self.add_btn = ctk.CTkButton(
+            bottom, text="＋  Aggiungi alimento",
+            font=ctk.CTkFont("Segoe UI", 13, "bold"),
+            height=40, corner_radius=10,
+            fg_color=COLORS["add_btn"],
+            hover_color=COLORS["add_btn_hov"],
+            command=self._add_row
+        )
+        self.add_btn.grid(row=0, column=0, sticky="ew", padx=(0, 5), pady=(0, 8))
+
+        self.calc_btn = ctk.CTkButton(
+            bottom, text="⚡  Calcola",
+            font=ctk.CTkFont("Segoe UI", 13, "bold"),
+            height=40, corner_radius=10,
+            fg_color=COLORS["accent"],
+            hover_color=COLORS["accent_hover"],
+            command=self._on_calculate
+        )
+        self.calc_btn.grid(row=0, column=1, sticky="ew", padx=(5, 0), pady=(0, 8))
+
+        self.status_lbl = ctk.CTkLabel(
+            bottom, text="Aggiungi ingredienti per iniziare.",
+            font=ctk.CTkFont("Segoe UI", 12),
+            text_color=COLORS["text_secondary"]
+        )
+        self.status_lbl.grid(row=1, column=0, columnspan=2)
+
+        # Start with one empty row
+        self._add_row()
+
+    def _add_row(self):
+        if len(self.ingredient_rows) >= 15:
+            self._set_status("⚠  Massimo 15 ingredienti raggiunto.", COLORS["warning"])
+            return
+
+        idx = len(self.ingredient_rows)
+        grid_row = idx + 1   # row 0 is the header
+
+        row_frame = ctk.CTkFrame(self.scroll, fg_color="transparent")
+        row_frame.grid(row=grid_row, column=0, columnspan=4,
+                       sticky="ew", padx=2, pady=2)
+        row_frame.grid_columnconfigure(0, weight=0)
+        row_frame.grid_columnconfigure(1, weight=3)
+        row_frame.grid_columnconfigure(2, weight=2)
+        row_frame.grid_columnconfigure(3, weight=0)
+
+        num_lbl = ctk.CTkLabel(
+            row_frame, text=f"{idx + 1:02d}",
+            font=ctk.CTkFont("Segoe UI", 12),
+            text_color=COLORS["text_secondary"], width=30
+        )
+        num_lbl.grid(row=0, column=0, padx=(4, 2), sticky="e")
+
+        ing_entry = ctk.CTkEntry(
+            row_frame,
+            placeholder_text="es. Riso, Pollo…",
+            font=ctk.CTkFont("Segoe UI", 13),
+            fg_color="#1e2133", border_color=COLORS["border"],
+            text_color=COLORS["text_primary"],
+            placeholder_text_color=COLORS["text_secondary"],
+            border_width=1, corner_radius=8, height=34
+        )
+        ing_entry.grid(row=0, column=1, padx=4, sticky="ew")
+
+        qty_entry = ctk.CTkEntry(
+            row_frame,
+            placeholder_text="g",
+            font=ctk.CTkFont("Segoe UI", 13),
+            fg_color="#1e2133", border_color=COLORS["border"],
+            text_color=COLORS["text_primary"],
+            placeholder_text_color=COLORS["text_secondary"],
+            border_width=1, corner_radius=8, height=34, width=85
+        )
+        qty_entry.grid(row=0, column=2, padx=4, sticky="w")
+
+        del_btn = ctk.CTkButton(
+            row_frame, text="✕", width=30, height=30,
+            font=ctk.CTkFont("Segoe UI", 12, "bold"),
+            fg_color=COLORS["del_btn"],
+            hover_color=COLORS["del_btn_hov"],
+            corner_radius=8,
+            command=lambda rf=row_frame: self._remove_row(rf)
+        )
+        del_btn.grid(row=0, column=3, padx=(4, 2))
+
+        self.ingredient_rows.append((row_frame, ing_entry, qty_entry))
+        self._refresh_numbers()
+
+        if len(self.ingredient_rows) >= 15:
+            self.add_btn.configure(state="disabled")
+
+    def _remove_row(self, row_frame: ctk.CTkFrame):
+        for i, (rf, _, _) in enumerate(self.ingredient_rows):
+            if rf is row_frame:
+                self.ingredient_rows.pop(i)
+                rf.destroy()
+                break
+        self.add_btn.configure(state="normal")
+        self._refresh_numbers()
+        self._set_status("", COLORS["text_secondary"])
+
+    def _refresh_numbers(self):
+        """Aggiorna i numeri progressivi dopo aggiunta/rimozione."""
+        self.count_lbl.configure(text=f"{len(self.ingredient_rows)} / 15")
+        for i, (rf, _, _) in enumerate(self.ingredient_rows):
+            # Il primo widget figlio nella colonna 0 è il num_lbl
+            for child in rf.winfo_children():
+                info = child.grid_info()
+                if info.get("column") == 0:
+                    child.configure(text=f"{i + 1:02d}")
+                    break
+
+    # ── Right panel ───────────────────────────────────────────────────────────
+    def _build_right_panel(self):
+        outer = ctk.CTkFrame(self, fg_color=COLORS["bg_panel"],
+                             corner_radius=16, border_width=1,
+                             border_color=COLORS["border"])
+        outer.grid(row=0, column=1, padx=(7, 14), pady=14, sticky="nsew")
+        outer.grid_rowconfigure(1, weight=1)
+        outer.grid_columnconfigure(0, weight=1)
+
+        title_bar = ctk.CTkFrame(outer, fg_color="transparent")
+        title_bar.grid(row=0, column=0, sticky="ew", padx=18, pady=(18, 10))
+        ctk.CTkLabel(
+            title_bar, text="📊  Valori Nutrizionali",
+            font=ctk.CTkFont("Segoe UI", 17, "bold"),
+            text_color=COLORS["text_primary"]
+        ).pack(side="left")
+        ctk.CTkLabel(
+            title_bar, text="arrotondamento per eccesso ai centesimi",
+            font=ctk.CTkFont("Segoe UI", 10),
+            text_color=COLORS["text_secondary"]
+        ).pack(side="right")
+
+        self.table_scroll = ctk.CTkScrollableFrame(
+            outer, fg_color="transparent",
+            scrollbar_button_color=COLORS["accent"],
+            scrollbar_button_hover_color=COLORS["accent_hover"]
+        )
+        self.table_scroll.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 12))
+
+        for c, w in enumerate([3, 1, 1, 1, 1, 1, 1]):
+            self.table_scroll.grid_columnconfigure(c, weight=w, minsize=70)
+
+        self._draw_table_header()
+        self._draw_placeholder()
+
+    def _draw_table_header(self):
+        headers = ["Ingrediente", "Qtà (g)",
+                   "Calorie\n(kcal)", "Proteine\n(g)",
+                   "Lipidi\n(g)", "Sodio\n(mg)", "Fibre\n(g)"]
+        for col, txt in enumerate(headers):
+            ctk.CTkLabel(
+                self.table_scroll, text=txt,
+                font=ctk.CTkFont("Segoe UI", 12, "bold"),
+                fg_color=COLORS["bg_header"],
+                text_color="white",
+                corner_radius=6, justify="center"
+            ).grid(row=0, column=col, padx=1, pady=(0, 3),
+                   sticky="ew", ipadx=6, ipady=6)
+
+    def _draw_placeholder(self):
+        self._placeholder = ctk.CTkLabel(
+            self.table_scroll,
+            text="Inserisci ingredienti e premi «⚡ Calcola»",
+            font=ctk.CTkFont("Segoe UI", 13),
+            text_color=COLORS["text_secondary"],
+            justify="center"
+        )
+        self._placeholder.grid(row=1, column=0, columnspan=7, pady=70, sticky="ew")
+
+    def _reset_table(self):
+        """Svuota la tabella dei risultati e mostra il segnaposto."""
+        for w in self.table_scroll.winfo_children():
+            w.destroy()
+        self._draw_table_header()
+        self._draw_placeholder()
+
+    # ── Calculation ───────────────────────────────────────────────────────────
+    def _on_calculate(self):
+        ingredients = []
+        not_found = []
+
+        for _, ing_e, qty_e in self.ingredient_rows:
+            name = ing_e.get().strip()
+            qty  = qty_e.get().strip()
+            if not name and not qty:
+                continue
+            if not name:
+                self._reset_table()
+                self._set_status("⚠  Inserisci il nome di tutti gli ingredienti.", COLORS["warning"])
+                return
+            if not qty:
+                self._reset_table()
+                self._set_status(f"⚠  Quantità mancante per «{name}».", COLORS["warning"])
+                return
+            try:
+                qty_val = float(qty.replace(",", "."))
+            except ValueError:
+                self._reset_table()
+                self._set_status(f"⚠  Quantità non valida per «{name}».", COLORS["warning"])
+                return
+            if qty_val <= 0:
+                self._reset_table()
+                self._set_status(f"⚠  La quantità di «{name}» deve essere > 0.", COLORS["warning"])
+                return
+
+            result = lookup(name, qty_val)
+            if result is None:
+                not_found.append(name)
+            else:
+                ingredients.append(result)
+
+        if not ingredients and not not_found:
+            self._reset_table()
+            self._set_status("⚠  Inserisci almeno un ingrediente.", COLORS["warning"])
+            return
+
+        if not_found:
+            missing = ", ".join(not_found)
+            if not ingredients:
+                self._reset_table()
+                self._set_status(f"⚠  Non trovati nel DB: {missing}", COLORS["warning"])
+                return
+
+        self._render_results(ingredients, not_found)
+
+    # ── Rendering ─────────────────────────────────────────────────────────────
+    def _render_results(self, rows: list[dict], not_found: list[str]):
+        # Clear previous table content (keep header row=0)
+        for w in self.table_scroll.winfo_children():
+            w.destroy()
+        self._draw_table_header()
+
+        totals = {"quantity": 0.0, "calories": 0.0, "proteins": 0.0,
+                  "lipids": 0.0, "sodium": 0.0, "fibers": 0.0}
+
+        for i, row in enumerate(rows):
+            bg = COLORS["bg_row_even"] if i % 2 == 0 else COLORS["bg_row_odd"]
+            for key in totals:
+                totals[key] += row[key]
+
+            values = [
+                row["name"],
+                f"{row['quantity']:.0f}",
+                f"{row['calories']:.2f}",
+                f"{row['proteins']:.2f}",
+                f"{row['lipids']:.2f}",
+                f"{row['sodium']:.2f}",
+                f"{row['fibers']:.2f}",
+            ]
+            for col, val in enumerate(values):
+                ctk.CTkLabel(
+                    self.table_scroll, text=val,
+                    font=ctk.CTkFont("Segoe UI", 12),
+                    fg_color=bg,
+                    text_color=COLORS["text_primary"],
+                    corner_radius=0,
+                    anchor="w" if col == 0 else "center",
+                    justify="left" if col == 0 else "center"
+                ).grid(row=i + 1, column=col, padx=1, pady=1,
+                       sticky="ew", ipadx=8, ipady=5)
+
+        # Ceil totals as well
+        for key in totals:
+            totals[key] = ceil2(totals[key])
+
+        # Totals row
+        total_row = len(rows) + 1
+        total_vals = [
+            "TOTALE", f"{totals['quantity']:.0f}",
+            f"{totals['calories']:.2f}",
+            f"{totals['proteins']:.2f}",
+            f"{totals['lipids']:.2f}",
+            f"{totals['sodium']:.2f}",
+            f"{totals['fibers']:.2f}",
+        ]
+        for col, val in enumerate(total_vals):
+            ctk.CTkLabel(
+                self.table_scroll, text=val,
+                font=ctk.CTkFont("Segoe UI", 13, "bold"),
+                fg_color=COLORS["bg_total"],
+                text_color="white",
+                corner_radius=4,
+                anchor="w" if col == 0 else "center",
+                justify="left" if col == 0 else "center"
+            ).grid(row=total_row, column=col, padx=1, pady=(5, 2),
+                   sticky="ew", ipadx=8, ipady=7)
+
+        msg = f"✅  {len(rows)} ingredient{'e' if len(rows)==1 else 'i'} calcolat{'o' if len(rows)==1 else 'i'}."
+        if not_found:
+            msg += f"  ⚠ Non trovati: {', '.join(not_found)}"
+        self._set_status(msg, COLORS["success"] if not not_found else COLORS["warning"])
+
+    # ── Helpers ───────────────────────────────────────────────────────────────
+    def _set_status(self, text: str, color: str):
+        self.status_lbl.configure(text=text, text_color=color)
+
+
+# ─── Entry point ──────────────────────────────────────────────────────────────
+if __name__ == "__main__":
+    app = NutritionalCalculator()
+    app.mainloop()

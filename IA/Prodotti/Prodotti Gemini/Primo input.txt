@@ -1,0 +1,167 @@
+import customtkinter as ctk
+from tkinter import messagebox
+
+# Database locale fittizio (Valori riferiti a 100g di prodotto)
+# Per inserire un alimento reale, il nome digitato dovrà corrispondere a queste chiavi.
+DATABASE_ALIMENTI = {
+    "farina": {"calorie": 364.0, "proteine": 10.0, "lipidi": 1.0, "sodio": 2.0, "fibre": 2.7},
+    "acqua": {"calorie": 0.0, "proteine": 0.0, "lipidi": 0.0, "sodio": 0.0, "fibre": 0.0},
+    "lievito": {"calorie": 105.0, "proteine": 8.0, "lipidi": 1.9, "sodio": 51.0, "fibre": 5.4},
+    "sale": {"calorie": 0.0, "proteine": 0.0, "lipidi": 0.0, "sodio": 38758.0, "fibre": 0.0},
+    "pomodoro": {"calorie": 18.0, "proteine": 0.9, "lipidi": 0.2, "sodio": 5.0, "fibre": 1.2},
+    "mozzarella": {"calorie": 280.0, "proteine": 28.0, "lipidi": 17.0, "sodio": 160.0, "fibre": 0.0},
+    "mozzarella di bufala": {"calorie": 288.0, "proteine": 16.7, "lipidi": 24.4, "sodio": 16.0, "fibre": 0.0},
+    "patate": {"calorie": 77.0, "proteine": 2.0, "lipidi": 0.1, "sodio": 6.0, "fibre": 2.2},
+    "salsiccia": {"calorie": 346.0, "proteine": 14.0, "lipidi": 31.0, "sodio": 845.0, "fibre": 0.0},
+    "mortadella": {"calorie": 288.0, "proteine": 15.7, "lipidi": 25.0, "sodio": 900.0, "fibre": 0.0},
+}
+
+class CalcolatoreNutrizionale(ctk.CTk):
+    def __init__(self):
+        super().__init__()
+        
+        self.title("Calcolatore Valori Nutrizionali")
+        self.geometry("900x600")
+        ctk.set_appearance_mode("dark")  # Opzioni: "system", "dark", "light"
+        ctk.set_default_color_theme("blue")
+
+        # Configurazione del layout a 2 colonne
+        self.grid_columnconfigure(0, weight=1, uniform="col")
+        self.grid_columnconfigure(1, weight=1, uniform="col")
+        self.grid_rowconfigure(0, weight=1)
+
+        self.ingredient_rows = []
+        self.max_ingredients = 15
+
+        self.crea_lato_sinistro()
+        self.crea_lato_destro()
+
+        # Aggiungo la prima riga vuota di default
+        self.aggiungi_riga()
+
+    def crea_lato_sinistro(self):
+        # Container principale per la colonna sinistra
+        self.left_container = ctk.CTkFrame(self)
+        self.left_container.grid(row=0, column=0, padx=20, pady=20, sticky="nsew")
+        self.left_container.grid_rowconfigure(0, weight=1)
+        self.left_container.grid_columnconfigure(0, weight=1)
+
+        # Frame scrollabile per poter inserire fino a 15 ingredienti
+        self.scroll_frame = ctk.CTkScrollableFrame(self.left_container, label_text="Lista Alimenti (Max 15)")
+        self.scroll_frame.grid(row=0, column=0, padx=10, pady=10, sticky="nsew")
+
+        # Pulsante per aggiungere nuove righe
+        self.add_btn = ctk.CTkButton(self.left_container, text="+ Aggiungi Alimento", command=self.aggiungi_riga, fg_color="transparent", border_width=1)
+        self.add_btn.grid(row=1, column=0, padx=10, pady=(0, 10), sticky="ew")
+
+        # Pulsante finale per il calcolo
+        self.calc_btn = ctk.CTkButton(self.left_container, text="Calcola valori nutrizionali", command=self.calcola_valori, height=40, font=("Arial", 14, "bold"))
+        self.calc_btn.grid(row=2, column=0, padx=10, pady=(0, 20), sticky="ew")
+
+    def crea_lato_destro(self):
+        # Container principale per la colonna destra
+        self.right_frame = ctk.CTkFrame(self)
+        self.right_frame.grid(row=0, column=1, padx=20, pady=20, sticky="nsew")
+
+        titolo_tabella = ctk.CTkLabel(self.right_frame, text="Riepilogo Totale", font=("Arial", 20, "bold"))
+        titolo_tabella.pack(pady=(20, 30))
+
+        # Intestazione della Tabella
+        header_frame = ctk.CTkFrame(self.right_frame, fg_color=("gray80", "gray30"))
+        header_frame.pack(fill="x", padx=20, pady=5)
+        ctk.CTkLabel(header_frame, text="Valore Nutrizionale", width=150, anchor="w", font=("Arial", 14, "bold")).pack(side="left", padx=10, pady=5)
+        ctk.CTkLabel(header_frame, text="Totale", width=100, anchor="e", font=("Arial", 14, "bold")).pack(side="right", padx=10, pady=5)
+
+        # Struttura dati per aggiornare facilmente i testi
+        self.risultati_vars = {
+            "Calorie": {"var": ctk.StringVar(value="0.00"), "unita": "kcal"},
+            "Proteine": {"var": ctk.StringVar(value="0.00"), "unita": "g"},
+            "Lipidi": {"var": ctk.StringVar(value="0.00"), "unita": "g"},
+            "Sodio": {"var": ctk.StringVar(value="0.00"), "unita": "mg"},
+            "Fibre": {"var": ctk.StringVar(value="0.00"), "unita": "g"}
+        }
+
+        # Creazione delle righe della tabella
+        for nutriente, info in self.risultati_vars.items():
+            row_frame = ctk.CTkFrame(self.right_frame)
+            row_frame.pack(fill="x", padx=20, pady=2)
+            
+            # Etichetta Nutriente (es. Calorie)
+            ctk.CTkLabel(row_frame, text=nutriente, width=150, anchor="w").pack(side="left", padx=10, pady=5)
+            
+            # Frame per Valore + Unità di misura allineato a destra
+            val_frame = ctk.CTkFrame(row_frame, fg_color="transparent")
+            val_frame.pack(side="right", padx=10)
+            
+            ctk.CTkLabel(val_frame, textvariable=info["var"], width=60, anchor="e", font=("Arial", 14, "bold")).pack(side="left")
+            ctk.CTkLabel(val_frame, text=info["unita"], width=35, anchor="w").pack(side="left", padx=(5, 0))
+
+    def aggiungi_riga(self):
+        if len(self.ingredient_rows) >= self.max_ingredients:
+            return
+
+        row_frame = ctk.CTkFrame(self.scroll_frame, fg_color="transparent")
+        row_frame.pack(fill="x", pady=5, padx=5)
+
+        ing_entry = ctk.CTkEntry(row_frame, placeholder_text="Ingrediente")
+        ing_entry.pack(side="left", fill="x", expand=True, padx=(0, 5))
+
+        qty_entry = ctk.CTkEntry(row_frame, placeholder_text="Quantità (g)", width=90)
+        qty_entry.pack(side="left")
+
+        # Salviamo i riferimenti alle entry widget
+        self.ingredient_rows.append((ing_entry, qty_entry))
+
+        # Se abbiamo raggiunto 15 ingredienti, disabilitiamo il pulsante
+        if len(self.ingredient_rows) >= self.max_ingredients:
+            self.add_btn.configure(state="disabled", text="Limite 15 raggiunto")
+
+    def calcola_valori(self):
+        totali = {
+            "Calorie": 0.0,
+            "Proteine": 0.0,
+            "Lipidi": 0.0,
+            "Sodio": 0.0,
+            "Fibre": 0.0
+        }
+
+        ingredienti_non_trovati = []
+
+        for ing_entry, qty_entry in self.ingredient_rows:
+            nome = ing_entry.get().strip().lower()
+            qty_str = qty_entry.get().strip()
+
+            if not nome or not qty_str:
+                continue
+
+            try:
+                # Sostituiamo eventuali virgole con il punto per i decimali
+                quantita = float(qty_str.replace(',', '.'))
+            except ValueError:
+                messagebox.showwarning("Errore di Inserimento", f"La quantità inserita per '{nome}' non è un numero valido.")
+                return
+
+            if nome in DATABASE_ALIMENTI:
+                valori = DATABASE_ALIMENTI[nome]
+                fattore = quantita / 100.0 # Valori base sono calcolati su 100g
+
+                totali["Calorie"] += valori["calorie"] * fattore
+                totali["Proteine"] += valori["proteine"] * fattore
+                totali["Lipidi"] += valori["lipidi"] * fattore
+                totali["Sodio"] += valori["sodio"] * fattore
+                totali["Fibre"] += valori["fibre"] * fattore
+            else:
+                ingredienti_non_trovati.append(nome)
+
+        # Aggiornamento Variabili dell'interfaccia
+        for nutriente, valore_totale in totali.items():
+            self.risultati_vars[nutriente]["var"].set(f"{valore_totale:.2f}")
+
+        # Se qualche alimento non è presente nel nostro "Database", avvisa l'utente
+        if ingredienti_non_trovati:
+            lista_err = ", ".join(ingredienti_non_trovati)
+            messagebox.showinfo("Alimenti mancanti", f"I seguenti alimenti non sono presenti nel database e sono stati ignorati:\n\n{lista_err}")
+
+if __name__ == "__main__":
+    app = CalcolatoreNutrizionale()
+    app.mainloop()
