@@ -1,0 +1,19 @@
+- genero con i primi prompt un'interfaccia grafica che consente una serie di:
+- ingredienti
+- quantità in grammi
+- mi calcola le calorie complessive (l'API deve estrarre da solo i valori dei singoli parametri [calorie, grassi, proteine, fibre e sodio]
+
+
+- all'inizio chiedo di farlo in automatico e di generarmi un codice
+
+
+"costruiscimi un programma con interfaccia grafica che richieda in input un numero massimo di ingredienti(da definire numero massimo) e una quantità in grammi di ciascun ingrediente per poter ottenere come prodotto una quantità totale dei valori nutrizionali complessivi"
+
+
+
+
+
+- vari input diversi dopo il primo che deve essere uguale per tutti
+
+
+- barra di suggerimento alimenti per evitare inserimento alimento errato, se inserisco un testo dentro la casella alimento ma non seleziono nessun testo mi impedisce il calcolo e evidenzia di rosso la casella di errore

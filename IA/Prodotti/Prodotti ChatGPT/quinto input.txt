@@ -1,0 +1,417 @@
+import math
+import json
+import urllib.error
+import urllib.parse
+import urllib.request
+import customtkinter as ctk
+from tkinter import messagebox
+
+
+NUTRIENTS = ("Calorie", "Proteine", "Lipidi", "Sodio", "Fibre")
+MAX_INGREDIENTS = 15
+USDA_API_KEY = "Hola3CZ5B8PwOBJx02Lay9b6ki9E3CZu4cGHbNxH"
+USDA_SEARCH_URL = "https://api.nal.usda.gov/fdc/v1/foods/search"
+USDA_NUTRIENTS = {
+    "Calorie": "1008",
+    "Proteine": "1003",
+    "Lipidi": "1004",
+    "Sodio": "1093",
+    "Fibre": "1079",
+}
+
+COLORS = {
+    "background": "#0f172a",
+    "panel": "#111827",
+    "panel_light": "#1f2937",
+    "input": "#0b1220",
+    "border": "#334155",
+    "text": "#f8fafc",
+    "muted": "#94a3b8",
+    "accent": "#14b8a6",
+    "accent_hover": "#0f766e",
+    "primary": "#22c55e",
+    "primary_hover": "#16a34a",
+    "danger": "#ef4444",
+    "danger_hover": "#dc2626",
+}
+
+
+class NutritionCalculator(ctk.CTk):
+    def __init__(self):
+        super().__init__()
+        self.title("Calcolatore nutrizionale")
+        self.geometry("980x620")
+        self.minsize(840, 540)
+
+        ctk.set_appearance_mode("dark")
+        ctk.set_default_color_theme("dark-blue")
+        self.configure(fg_color=COLORS["background"])
+
+        self.ingredient_entries = []
+        self.quantity_entries = []
+        self.remove_buttons = []
+        self.result_vars = {nutrient: ctk.StringVar(value="0.00") for nutrient in NUTRIENTS}
+        self.status_var = ctk.StringVar(value="Dati nutrizionali estratti solo da USDA FoodData Central API.")
+        self.usda_cache = {}
+
+        self._build_layout()
+
+    def _build_layout(self):
+        self.grid_columnconfigure(0, weight=1, uniform="main")
+        self.grid_columnconfigure(1, weight=1, uniform="main")
+        self.grid_rowconfigure(0, weight=1)
+
+        input_frame = ctk.CTkFrame(
+            self,
+            corner_radius=8,
+            fg_color=COLORS["panel"],
+            border_color=COLORS["border"],
+            border_width=1,
+        )
+        input_frame.grid(row=0, column=0, padx=(18, 9), pady=18, sticky="nsew")
+        input_frame.grid_columnconfigure((0, 1), weight=1)
+        input_frame.grid_rowconfigure(2, weight=1)
+
+        results_frame = ctk.CTkFrame(
+            self,
+            corner_radius=8,
+            fg_color=COLORS["panel"],
+            border_color=COLORS["border"],
+            border_width=1,
+        )
+        results_frame.grid(row=0, column=1, padx=(9, 18), pady=18, sticky="nsew")
+        results_frame.grid_columnconfigure(0, weight=1)
+        results_frame.grid_rowconfigure(1, weight=1)
+
+        ctk.CTkLabel(
+            results_frame,
+            text="Totale valori nutrizionali",
+            font=ctk.CTkFont(size=22, weight="bold"),
+            text_color=COLORS["text"],
+        ).grid(row=0, column=0, padx=20, pady=(20, 12), sticky="w")
+
+        self._build_input_area(input_frame)
+        self._build_results_table(results_frame)
+
+    def _build_results_table(self, parent):
+        table_frame = ctk.CTkFrame(parent, fg_color="transparent")
+        table_frame.grid(row=1, column=0, padx=20, pady=(0, 20), sticky="nsew")
+        table_frame.grid_columnconfigure(0, weight=1)
+        table_frame.grid_columnconfigure(1, weight=1)
+
+        header_style = ctk.CTkFont(size=15, weight="bold")
+        ctk.CTkLabel(
+            table_frame,
+            text="Valore",
+            font=header_style,
+            text_color=COLORS["muted"],
+        ).grid(
+            row=0, column=0, padx=10, pady=10, sticky="w"
+        )
+        ctk.CTkLabel(
+            table_frame,
+            text="Totale",
+            font=header_style,
+            text_color=COLORS["muted"],
+        ).grid(row=0, column=1, columnspan=2, padx=10, pady=10, sticky="e"
+        )
+
+        for row, nutrient in enumerate(NUTRIENTS, start=1):
+            unit = "kcal" if nutrient == "Calorie" else "mg" if nutrient == "Sodio" else "g"
+
+            row_frame = ctk.CTkFrame(table_frame, fg_color=COLORS["panel_light"], corner_radius=6)
+            row_frame.grid(row=row, column=0, columnspan=3, padx=0, pady=5, sticky="ew")
+            row_frame.grid_columnconfigure(0, weight=1)
+
+            ctk.CTkLabel(
+                row_frame,
+                text=nutrient,
+                font=ctk.CTkFont(size=15),
+                text_color=COLORS["text"],
+            ).grid(
+                row=0, column=0, padx=14, pady=12, sticky="w"
+            )
+            ctk.CTkLabel(
+                row_frame,
+                textvariable=self.result_vars[nutrient],
+                font=ctk.CTkFont(size=17, weight="bold"),
+                text_color=COLORS["accent"],
+            ).grid(row=0, column=1, padx=(10, 4), pady=12, sticky="e")
+            ctk.CTkLabel(
+                row_frame,
+                text=unit,
+                font=ctk.CTkFont(size=13),
+                text_color=COLORS["muted"],
+            ).grid(
+                row=0, column=2, padx=(0, 14), pady=12, sticky="w"
+            )
+
+        ctk.CTkLabel(
+            parent,
+            textvariable=self.status_var,
+            wraplength=380,
+            justify="left",
+            text_color=COLORS["muted"],
+        ).grid(row=2, column=0, padx=20, pady=(0, 20), sticky="w")
+
+    def _build_input_area(self, parent):
+        ctk.CTkLabel(
+            parent,
+            text="Ingredienti",
+            font=ctk.CTkFont(size=22, weight="bold"),
+            text_color=COLORS["text"],
+        ).grid(row=0, column=0, columnspan=2, padx=20, pady=(20, 12), sticky="w")
+
+        self.rows_frame = ctk.CTkScrollableFrame(parent, fg_color="transparent", scrollbar_button_color=COLORS["border"])
+        self.rows_frame.grid(row=2, column=0, columnspan=2, padx=12, pady=(0, 10), sticky="nsew")
+        self.rows_frame.grid_columnconfigure(0, weight=1)
+        self.rows_frame.grid_columnconfigure(1, weight=1)
+        self.rows_frame.grid_columnconfigure(2, weight=0)
+
+        ctk.CTkLabel(
+            self.rows_frame,
+            text="Ingrediente",
+            font=ctk.CTkFont(weight="bold"),
+            text_color=COLORS["muted"],
+        ).grid(
+            row=0, column=0, padx=(8, 8), pady=(0, 8), sticky="w"
+        )
+        ctk.CTkLabel(
+            self.rows_frame,
+            text="Quantità (g)",
+            font=ctk.CTkFont(weight="bold"),
+            text_color=COLORS["muted"],
+        ).grid(
+            row=0, column=1, padx=(8, 8), pady=(0, 8), sticky="w"
+        )
+
+        self.add_button = ctk.CTkButton(
+            self.rows_frame,
+            text="+ Aggiungi alimento",
+            command=self.add_ingredient_row,
+            width=132,
+            height=28,
+            corner_radius=6,
+            fg_color=COLORS["accent"],
+            hover_color=COLORS["accent_hover"],
+            font=ctk.CTkFont(size=12, weight="bold"),
+        )
+
+        ctk.CTkButton(
+            parent,
+            text="Calcola valori nutrizionali",
+            command=self.calculate_totals,
+            height=42,
+            corner_radius=6,
+            fg_color=COLORS["primary"],
+            hover_color=COLORS["primary_hover"],
+            text_color="#052e16",
+            font=ctk.CTkFont(size=15, weight="bold"),
+        ).grid(row=3, column=0, columnspan=2, padx=20, pady=(0, 20), sticky="ew")
+
+        self.add_ingredient_row()
+
+    def add_ingredient_row(self):
+        if len(self.ingredient_entries) >= MAX_INGREDIENTS:
+            return
+
+        row = len(self.ingredient_entries)
+        ingredient_entry = ctk.CTkEntry(
+            self.rows_frame,
+            placeholder_text=f"Ingrediente {row}",
+            fg_color=COLORS["input"],
+            border_color=COLORS["border"],
+            text_color=COLORS["text"],
+            placeholder_text_color=COLORS["muted"],
+        )
+
+        quantity_entry = ctk.CTkEntry(
+            self.rows_frame,
+            placeholder_text="0",
+            fg_color=COLORS["input"],
+            border_color=COLORS["border"],
+            text_color=COLORS["text"],
+            placeholder_text_color=COLORS["muted"],
+        )
+
+        remove_button = ctk.CTkButton(
+            self.rows_frame,
+            text="\U0001F5D1",
+            width=34,
+            height=30,
+            corner_radius=6,
+            fg_color="#b91c1c",
+            hover_color="#991b1b",
+            font=ctk.CTkFont(size=15),
+            command=lambda entry=ingredient_entry: self.remove_ingredient_row(entry),
+        )
+
+        self.ingredient_entries.append(ingredient_entry)
+        self.quantity_entries.append(quantity_entry)
+        self.remove_buttons.append(remove_button)
+
+        self._refresh_ingredient_rows()
+
+    def remove_ingredient_row(self, ingredient_entry):
+        if ingredient_entry not in self.ingredient_entries:
+            return
+
+        index = self.ingredient_entries.index(ingredient_entry)
+        widgets = (
+            self.ingredient_entries.pop(index),
+            self.quantity_entries.pop(index),
+            self.remove_buttons.pop(index),
+        )
+
+        for widget in widgets:
+            widget.destroy()
+
+        if not self.ingredient_entries:
+            self.add_ingredient_row()
+            return
+
+        self._refresh_ingredient_rows()
+
+    def _refresh_ingredient_rows(self):
+        self.add_button.grid_forget()
+
+        for index, (ingredient_entry, quantity_entry, remove_button) in enumerate(
+            zip(self.ingredient_entries, self.quantity_entries, self.remove_buttons),
+            start=1,
+        ):
+            ingredient_entry.configure(placeholder_text=f"Ingrediente {index}")
+            ingredient_entry.grid(row=index, column=0, padx=(8, 8), pady=5, sticky="ew")
+            quantity_entry.grid(row=index, column=1, padx=(8, 8), pady=5, sticky="ew")
+            remove_button.grid(row=index, column=2, padx=(4, 8), pady=5, sticky="e")
+
+        add_row = len(self.ingredient_entries) + 1
+        self.add_button.grid(row=add_row, column=0, columnspan=3, padx=(8, 8), pady=(6, 4))
+
+        if len(self.ingredient_entries) == MAX_INGREDIENTS:
+            self.add_button.configure(state="disabled", text="Limite 15")
+        else:
+            self.add_button.configure(state="normal", text="+ Aggiungi alimento")
+
+    def calculate_totals(self):
+        totals = {nutrient: 0.0 for nutrient in NUTRIENTS}
+        unknown_ingredients = []
+        api_errors = []
+
+        self.status_var.set("Calcolo in corso: interrogazione USDA FoodData Central API...")
+        self.update_idletasks()
+
+        for ingredient_entry, quantity_entry in zip(self.ingredient_entries, self.quantity_entries):
+            ingredient = ingredient_entry.get().strip().lower()
+            quantity_text = quantity_entry.get().strip().replace(",", ".")
+
+            if not ingredient and not quantity_text:
+                continue
+
+            if not ingredient or not quantity_text:
+                messagebox.showerror("Dati incompleti", "Compila sia Ingrediente sia Quantità.")
+                self.status_var.set("Calcolo interrotto: dati incompleti.")
+                return
+
+            try:
+                quantity = float(quantity_text)
+            except ValueError:
+                messagebox.showerror("Quantità non valida", f"La quantità di '{ingredient}' non è un numero.")
+                self.status_var.set("Calcolo interrotto: quantita non numerica.")
+                return
+
+            if quantity < 0:
+                messagebox.showerror("Quantità non valida", "Inserisci quantità maggiori o uguali a zero.")
+                self.status_var.set("Calcolo interrotto: quantita non valida.")
+                return
+
+            try:
+                nutrition = self.fetch_usda_nutrition(ingredient)
+            except RuntimeError as error:
+                api_errors.append(str(error))
+                continue
+
+            if not nutrition:
+                unknown_ingredients.append(ingredient)
+                continue
+
+            multiplier = quantity / 100
+            for nutrient in NUTRIENTS:
+                totals[nutrient] += nutrition.get(nutrient, 0.0) * multiplier
+
+        for nutrient, total in totals.items():
+            self.result_vars[nutrient].set(f"{self._round_up(total):.2f}")
+
+        self.status_var.set("Fonte dati: USDA FoodData Central API.")
+
+        if api_errors:
+            messagebox.showerror("Errore USDA FoodData Central", "\n".join(api_errors[:3]))
+            self.status_var.set("Errore durante la richiesta a USDA FoodData Central API.")
+            return
+
+        if unknown_ingredients:
+            messagebox.showwarning(
+                "Ingredienti non trovati",
+                "Non ho trovato questi alimenti tramite USDA FoodData Central API: "
+                + ", ".join(sorted(set(unknown_ingredients)))
+            )
+
+    def fetch_usda_nutrition(self, ingredient):
+        if ingredient in self.usda_cache:
+            return self.usda_cache[ingredient]
+
+        query = urllib.parse.urlencode({"api_key": USDA_API_KEY})
+        payload = json.dumps(
+            {
+                "query": ingredient,
+                "pageSize": 1,
+                "requireAllWords": False,
+            }
+        ).encode("utf-8")
+        request = urllib.request.Request(
+            f"{USDA_SEARCH_URL}?{query}",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+
+        try:
+            with urllib.request.urlopen(request, timeout=15) as response:
+                data = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as error:
+            raise RuntimeError(f"USDA API ha risposto con errore HTTP {error.code}.") from error
+        except urllib.error.URLError as error:
+            raise RuntimeError(f"Impossibile collegarsi alla USDA API: {error.reason}.") from error
+        except TimeoutError as error:
+            raise RuntimeError("La richiesta alla USDA API ha superato il tempo massimo.") from error
+
+        foods = data.get("foods", [])
+        if not foods:
+            self.usda_cache[ingredient] = None
+            return None
+
+        nutrition = self.extract_nutrients_from_usda_food(foods[0])
+        self.usda_cache[ingredient] = nutrition
+        return nutrition
+
+    @staticmethod
+    def extract_nutrients_from_usda_food(food):
+        nutrition = {nutrient: 0.0 for nutrient in NUTRIENTS}
+
+        for food_nutrient in food.get("foodNutrients", []):
+            nutrient_id = str(food_nutrient.get("nutrientId", "")).strip()
+            nutrient_value = food_nutrient.get("value")
+
+            for nutrient_name, usda_id in USDA_NUTRIENTS.items():
+                if nutrient_id == usda_id and nutrient_value is not None:
+                    nutrition[nutrient_name] = float(nutrient_value)
+
+        return nutrition
+
+    @staticmethod
+    def _round_up(value):
+        return math.ceil((value - 1e-9) * 100) / 100
+
+
+if __name__ == "__main__":
+    app = NutritionCalculator()
+    app.mainloop()

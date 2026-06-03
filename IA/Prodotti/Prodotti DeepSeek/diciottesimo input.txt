@@ -1,0 +1,544 @@
+import customtkinter as ctk
+import math
+import requests
+import threading
+import urllib.parse
+import json
+
+# ================================================================
+# CONFIGURAZIONE API USDA – Sostituisci con la tua chiave!
+# ================================================================
+USDA_API_KEY = "Hola3CZ5B8PwOBJx02Lay9b6ki9E3CZu4cGHbNxH"  # <-- SOSTITUISCI CON LA TUA CHIAVE
+USDA_SEARCH_URL = "https://api.nal.usda.gov/fdc/v1/foods/search"
+USDA_FOOD_URL = "https://api.nal.usda.gov/fdc/v1/food/{}"
+
+DATA_TYPE_PRIORITY = {
+    "Foundation": 1,
+    "SR Legacy": 2,
+    "Survey (FNDDS)": 3,
+    "Branded": 4
+}
+
+COMPLEX_KEYWORDS = [
+    "rotisserie", "breaded", "commercial", "with", "cooked",
+    "brand", "frozen", "canned", "ready-to-eat", "instant",
+    "prepared", "formulated", "baby food", "infant formula"
+]
+
+
+class SuggestionPopup(ctk.CTkToplevel):
+    def __init__(self, parent, entry, fdc_ids, row_idx):
+        super().__init__(parent)
+        self.entry = entry
+        self.fdc_ids = fdc_ids
+        self.row_idx = row_idx
+        self.overrideredirect(True)
+        self.attributes("-topmost", True)
+        self.configure(fg_color="#2b2b2b")
+        self.grid_columnconfigure(0, weight=1)
+
+        self.scroll = ctk.CTkScrollableFrame(self, width=300, height=150)
+        self.scroll.grid(row=0, column=0, sticky="nsew")
+        self.suggestions = []
+
+    def set_suggestions(self, items):
+        for w in self.scroll.winfo_children():
+            w.destroy()
+        self.suggestions = items
+        if not items:
+            self.withdraw()
+            return
+
+        for idx, item in enumerate(items):
+            btn = ctk.CTkButton(
+                self.scroll,
+                text=item["description"],
+                anchor="w",
+                fg_color="transparent",
+                hover_color="#3a3a3a",
+                corner_radius=0,
+                command=lambda i=idx: self.select(i)
+            )
+            btn.pack(fill="x", padx=2, pady=1)
+
+        x = self.entry.winfo_rootx()
+        y = self.entry.winfo_rooty() + self.entry.winfo_height() + 2
+        self.geometry(f"+{x}+{y}")
+        self.deiconify()
+
+    def select(self, idx):
+        item = self.suggestions[idx]
+        self.entry.delete(0, "end")
+        self.entry.insert(0, item["description"])
+        self.fdc_ids[self.row_idx] = item["fdcId"]
+        self.destroy()
+
+
+class NutritionCalculator(ctk.CTk):
+    def __init__(self):
+        super().__init__()
+        self.title("Calcolatore Valori Nutrizionali")
+        self.geometry("890x640")
+        self.resizable(False, False)
+
+        ctk.set_appearance_mode("dark")
+        ctk.set_default_color_theme("dark-blue")
+
+        self.left_frame = ctk.CTkFrame(self, width=450, height=600)
+        self.left_frame.pack(side="left", fill="y", expand=False, padx=10, pady=10)
+        self.left_frame.pack_propagate(False)
+
+        self.right_frame = ctk.CTkFrame(self, width=400, height=600)
+        self.right_frame.pack(side="right", fill="y", expand=False, padx=10, pady=10)
+        self.right_frame.pack_propagate(False)
+
+        self.active_popup = None
+        self.popup_hide_timer = None
+        self.search_timer = None
+        self.calc_thread = None
+        self.api_available = False
+
+        self.build_left_panel()
+        self.build_right_panel()
+
+        # Test iniziale della chiave
+        self.test_api_key()
+
+    def test_api_key(self):
+        """Verifica la validità della chiave API all'avvio."""
+        def worker():
+            try:
+                url = USDA_SEARCH_URL + "?query=apple&api_key=" + urllib.parse.quote(USDA_API_KEY, safe='') + "&pageSize=1"
+                print("[TEST API] URL:", url)
+                resp = requests.get(url, timeout=10)
+                if resp.status_code == 200:
+                    self.api_available = True
+                    self.after(0, lambda: self.search_status.configure(text="API connessa ✓", text_color="#66bb6a"))
+                else:
+                    try:
+                        detail = resp.json().get("error", resp.text)
+                    except:
+                        detail = resp.text.strip() or f"Codice {resp.status_code}"
+                    msg = f"Chiave API non valida: {detail}"
+                    print("[TEST API] Errore:", msg)
+                    self.after(0, lambda m=msg: self.show_api_error(m))
+                    self.after(0, lambda: self.add_button.configure(state="disabled"))
+            except Exception as e:
+                msg = f"Errore di connessione: {str(e)}"
+                print("[TEST API] Eccezione:", msg)
+                self.after(0, lambda m=msg: self.show_api_error(m))
+                self.after(0, lambda: self.add_button.configure(state="disabled"))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    # ------------------------------------------------------------
+    # PANNELLO SINISTRO
+    # ------------------------------------------------------------
+    def build_left_panel(self):
+        ctk.CTkLabel(self.left_frame, text="Inserisci gli alimenti (max 15)",
+                     font=("Arial", 16, "bold")).pack(pady=(10, 5))
+
+        self.scroll_frame = ctk.CTkScrollableFrame(self.left_frame, width=420, height=400)
+        self.scroll_frame.pack(fill="both", expand=True, padx=5, pady=5)
+
+        self.ingredient_entries = []
+        self.quantity_entries = []
+        self.fdc_ids = []
+        self.row_frames = []
+        self.number_labels = []
+
+        bottom_frame = ctk.CTkFrame(self.scroll_frame, fg_color="transparent")
+        bottom_frame.pack(side="bottom", fill="x", padx=0, pady=(5, 10))
+        self.add_button = ctk.CTkButton(
+            bottom_frame, text="+ Aggiungi alimento",
+            command=self.add_ingredient_row, width=120, height=28,
+            font=("Arial", 11), fg_color="#2e8b57", hover_color="#1f6d3d"
+        )
+        self.add_button.pack(expand=True)
+
+        self.search_status = ctk.CTkLabel(
+            self.left_frame, text="Verifica API in corso…", text_color="#aaaaaa", font=("Arial", 11)
+        )
+        self.search_status.pack(pady=(2, 0))
+
+        self.calc_button = ctk.CTkButton(
+            self.left_frame, text="Calcola valori nutrizionali",
+            command=self.start_calculation, height=38,
+            font=("Arial", 14, "bold"), fg_color="#1f538d", hover_color="#14375e"
+        )
+        self.calc_button.pack(pady=(5, 10))
+
+    def add_ingredient_row(self):
+        if not self.api_available:
+            self.search_status.configure(text="API non disponibile", text_color="#f0ad4e")
+            return
+        if len(self.ingredient_entries) >= 15:
+            self.add_button.configure(state="disabled", text="Massimo 15 alimenti")
+            return
+
+        row_frame = ctk.CTkFrame(self.scroll_frame)
+        row_frame.pack(fill="x", padx=5, pady=2, before=self.add_button.master)
+
+        num = len(self.ingredient_entries) + 1
+        num_label = ctk.CTkLabel(row_frame, text=f"{num}.", width=30)
+        num_label.pack(side="left", padx=5)
+
+        ing_entry = ctk.CTkEntry(row_frame, placeholder_text="Cerca alimento...", width=180)
+        ing_entry.pack(side="left", padx=5)
+
+        qty_entry = ctk.CTkEntry(row_frame, placeholder_text="Quantità (g)", width=80)
+        qty_entry.pack(side="left", padx=5)
+
+        remove_btn = ctk.CTkButton(
+            row_frame, text="🗑️", width=30, height=30,
+            fg_color="#a94442", hover_color="#843534",
+            command=lambda f=row_frame: self.remove_row(f)
+        )
+        remove_btn.pack(side="right", padx=5)
+
+        self.ingredient_entries.append(ing_entry)
+        self.quantity_entries.append(qty_entry)
+        self.fdc_ids.append(None)
+        self.row_frames.append(row_frame)
+        self.number_labels.append(num_label)
+
+        row_idx = len(self.ingredient_entries) - 1
+        ing_entry.bind("<KeyRelease>", lambda e, idx=row_idx: self.on_key_release(idx))
+        ing_entry.bind("<FocusOut>", lambda e, idx=row_idx: self.schedule_hide_popup())
+
+        if len(self.ingredient_entries) == 15:
+            self.add_button.configure(state="disabled", text="Massimo 15 alimenti")
+
+    def remove_row(self, frame):
+        try:
+            idx = self.row_frames.index(frame)
+        except ValueError:
+            return
+
+        # Se il popup attivo appartiene a questa riga, lo chiude
+        if self.active_popup and self.active_popup.row_idx == idx:
+            self.hide_popup()
+
+        del self.ingredient_entries[idx]
+        del self.quantity_entries[idx]
+        del self.fdc_ids[idx]
+        del self.row_frames[idx]
+        del self.number_labels[idx]
+        frame.destroy()
+
+        for i in range(idx, len(self.number_labels)):
+            self.number_labels[i].configure(text=f"{i+1}.")
+
+        if len(self.ingredient_entries) < 15:
+            self.add_button.configure(state="normal", text="+ Aggiungi alimento")
+
+    # ------------------------------------------------------------
+    # AUTOCOMPLETAMENTO (ROBUSTO: MAI PIÙ 400)
+    # ------------------------------------------------------------
+    def schedule_hide_popup(self):
+        """Nasconde il popup dopo un breve ritardo."""
+        if self.popup_hide_timer is not None:
+            self.after_cancel(self.popup_hide_timer)
+        self.popup_hide_timer = self.after(200, self.hide_popup)
+
+    def on_key_release(self, idx):
+        if self.search_timer is not None:
+            self.after_cancel(self.search_timer)
+
+        entry = self.ingredient_entries[idx]
+        text = entry.get().strip()
+        if len(text) < 2:
+            self.hide_popup()
+            self.search_status.configure(text="")
+            return
+
+        if not self.api_available:
+            self.search_status.configure(text="API non connessa", text_color="#f0ad4e")
+            return
+
+        self.search_status.configure(text="Ricerca in corso…")
+        self.search_timer = self.after(500, lambda: self.search_food(text, idx, entry))
+
+    def search_food(self, query, idx, entry):
+        def worker():
+            try:
+                # Costruzione URL senza dataType (nessun filtro lato server)
+                encoded_query = urllib.parse.quote(query, safe='')
+                encoded_key = urllib.parse.quote(USDA_API_KEY, safe='')
+                url = f"{USDA_SEARCH_URL}?query={encoded_query}&api_key={encoded_key}&pageSize=50"
+                # pageSize aumentato per avere abbastanza risultati da filtrare
+                print("[RICERCA] URL:", url)
+
+                resp = requests.get(url, timeout=10)
+                try:
+                    data = resp.json()
+                except (json.JSONDecodeError, ValueError):
+                    msg = f"Risposta API non valida (codice {resp.status_code}). Dettaglio: {resp.text[:200]}"
+                    print("[RICERCA] Errore JSON:", msg)
+                    self.after(0, lambda m=msg: self.show_api_error(m))
+                    return
+
+                if resp.status_code != 200:
+                    error_detail = data.get("error", str(data))
+                    msg = f"Errore API ({resp.status_code}): {error_detail}"
+                    print("[RICERCA] Errore:", msg)
+                    self.after(0, lambda m=msg: self.show_api_error(m))
+                    return
+
+                foods = data.get("foods", [])
+                # Filtra solo i tipi desiderati (Foundation, SR Legacy, Survey (FNDDS))
+                allowed_types = {"Foundation", "SR Legacy", "Survey (FNDDS)"}
+                filtered_foods = [f for f in foods if f.get("dataType") in allowed_types]
+                sorted_foods = self.sort_results(filtered_foods)
+                suggestions = [
+                    {"fdcId": f["fdcId"], "description": f["description"]}
+                    for f in sorted_foods[:10]
+                ]
+                print(f"[RICERCA] Trovati {len(foods)} totali, {len(filtered_foods)} filtrati, mostrati {len(suggestions)}")
+                self.after(0, lambda: self.show_suggestions(suggestions, idx, entry))
+            except requests.RequestException as e:
+                msg = f"Errore di rete: {str(e)}"
+                print("[RICERCA] Eccezione:", msg)
+                self.after(0, lambda m=msg: self.show_api_error(m))
+            except Exception as e:
+                msg = f"Errore imprevisto: {str(e)}"
+                print("[RICERCA] Eccezione generica:", msg)
+                self.after(0, lambda m=msg: self.show_api_error(m))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def sort_results(self, foods):
+        scored = []
+        for f in foods:
+            dt = f.get("dataType", "")
+            base = DATA_TYPE_PRIORITY.get(dt, 99)
+            desc = f.get("description", "")
+            word_penalty = max(0, len(desc.split()) - 3) * 0.5
+            complexity = sum(1 for kw in COMPLEX_KEYWORDS if kw in desc.lower())
+            score = base + word_penalty + complexity * 2
+            scored.append((score, f))
+        scored.sort(key=lambda x: x[0])
+        return [item[1] for item in scored]
+
+    def show_suggestions(self, suggestions, idx, entry):
+        self.search_status.configure(text="")
+        # Annulla eventuale chiusura ritardata
+        if self.popup_hide_timer is not None:
+            self.after_cancel(self.popup_hide_timer)
+            self.popup_hide_timer = None
+        self.hide_popup()
+        if not suggestions:
+            return
+        self.active_popup = SuggestionPopup(self, entry, self.fdc_ids, idx)
+        self.active_popup.set_suggestions(suggestions)
+
+    def hide_popup(self):
+        if self.active_popup:
+            self.active_popup.destroy()
+            self.active_popup = None
+        if self.popup_hide_timer is not None:
+            self.after_cancel(self.popup_hide_timer)
+            self.popup_hide_timer = None
+
+    def show_api_error(self, msg):
+        self.search_status.configure(text="")
+        self.hide_popup()
+        self.message_label.configure(text=f"Errore API: {msg}", text_color="#f0ad4e")
+
+    # ------------------------------------------------------------
+    # PANNELLO DESTRO
+    # ------------------------------------------------------------
+    def build_right_panel(self):
+        ctk.CTkLabel(self.right_frame, text="Valori Nutrizionali Totali",
+                     font=("Arial", 16, "bold")).pack(pady=(10, 15))
+
+        table_box = ctk.CTkFrame(self.right_frame, fg_color="#2b2b2b",
+                                 corner_radius=10, border_width=1,
+                                 border_color="#4a4a4a")
+        table_box.pack(fill="x", padx=15, pady=0, ipady=10)
+
+        nutrients = [
+            ("Calorie (kcal)", "calorie"),
+            ("Proteine (g)",   "proteine"),
+            ("Lipidi (g)",     "lipidi"),
+            ("Sodio (mg)",     "sodio"),
+            ("Fibre (g)",      "fibre")
+        ]
+        self.value_labels = {}
+        for i, (name, key) in enumerate(nutrients):
+            lbl_name = ctk.CTkLabel(table_box, text=name, font=("Arial", 14), anchor="w")
+            lbl_name.grid(row=i, column=0, padx=(20, 10), pady=10, sticky="w")
+            lbl_value = ctk.CTkLabel(table_box, text="0.00", font=("Arial", 16, "bold"), anchor="e")
+            lbl_value.grid(row=i, column=1, padx=(10, 20), pady=10, sticky="e")
+            self.value_labels[key] = lbl_value
+
+        self.message_label = ctk.CTkLabel(self.right_frame, text="",
+                                          text_color="#66bb6a", font=("Arial", 12))
+        self.message_label.pack(pady=(15, 5))
+
+    def reset_totals(self):
+        for lbl in self.value_labels.values():
+            lbl.configure(text="0.00")
+
+    # ------------------------------------------------------------
+    # CALCOLO (estrazione robusta dei nutrienti)
+    # ------------------------------------------------------------
+    def start_calculation(self):
+        if not self.api_available:
+            self.message_label.configure(text="API non disponibile. Controlla la chiave.", text_color="#f0ad4e")
+            return
+        if self.calc_thread and self.calc_thread.is_alive():
+            return
+
+        self.reset_totals()
+        self.message_label.configure(text="Calcolo in corso…", text_color="#aaaaaa")
+        self.calc_button.configure(state="disabled")
+        self.calc_thread = threading.Thread(target=self.calculate_worker, daemon=True)
+        self.calc_thread.start()
+
+    def calculate_worker(self):
+        totals = {"calorie": 0.0, "proteine": 0.0, "lipidi": 0.0, "sodio": 0.0, "fibre": 0.0}
+        found_any = False
+        error_message = None
+
+        for idx, (ing_entry, qty_entry) in enumerate(zip(self.ingredient_entries, self.quantity_entries)):
+            ing_text = ing_entry.get().strip()
+            qty_str = qty_entry.get().strip()
+
+            if not ing_text and not qty_str:
+                continue
+
+            if not ing_text or not qty_str:
+                error_message = "Completa entrambi i campi per ogni alimento inserito."
+                break
+
+            try:
+                qty = float(qty_str)
+                if qty <= 0:
+                    error_message = "La quantità deve essere un numero positivo."
+                    break
+            except ValueError:
+                error_message = "Inserisci una quantità numerica valida (grammi)."
+                break
+
+            fdc_id = self.fdc_ids[idx]
+            if fdc_id is None:
+                error_message = f"Seleziona un alimento valido dalla lista per '{ing_text}'."
+                break
+
+            nutrients = self.fetch_nutrients(fdc_id)
+            if nutrients is None:
+                error_message = f"Impossibile recuperare i dati nutrizionali per '{ing_text}' (fdcId={fdc_id})."
+                break
+
+            print(f"[CALCOLO] {ing_text} (fdcId={fdc_id}): {nutrients}")
+            factor = qty / 100.0
+            for key in totals:
+                totals[key] += nutrients.get(key, 0.0) * factor
+
+            found_any = True
+
+        if error_message:
+            self.after(0, lambda m=error_message: self.finish_calculation(False, m, None))
+            return
+        if not found_any:
+            self.after(0, lambda: self.finish_calculation(False, "Inserisci almeno un alimento per eseguire il calcolo.", None))
+            return
+
+        for key in totals:
+            totals[key] = math.ceil(totals[key] * 100) / 100
+
+        print("[CALCOLO] Totali finali:", totals)
+        self.after(0, lambda t=totals: self.finish_calculation(True, None, t))
+
+    def finish_calculation(self, success, message, totals):
+        self.calc_button.configure(state="normal")
+        if not success:
+            self.reset_totals()
+            self.message_label.configure(text=message, text_color="#f0ad4e")
+            return
+        for key, lbl in self.value_labels.items():
+            lbl.configure(text=f"{totals[key]:.2f}")
+        self.message_label.configure(text="✓ Calcolo completato con successo.", text_color="#66bb6a")
+
+    def fetch_nutrients(self, fdc_id):
+        """Recupera i nutrienti per 100g, gestendo la struttura annidata e labelNutrients."""
+        try:
+            url = USDA_FOOD_URL.format(fdc_id) + "?api_key=" + urllib.parse.quote(USDA_API_KEY, safe='')
+            print("[FETCH NUTRIENTS] URL:", url)
+            resp = requests.get(url, timeout=10)
+            try:
+                data = resp.json()
+            except (json.JSONDecodeError, ValueError):
+                print(f"[FETCH NUTRIENTS] Risposta non JSON per fdcId {fdc_id}: {resp.text[:200]}")
+                return None
+
+            if resp.status_code != 200:
+                error = data.get("error", resp.text)
+                print(f"[FETCH NUTRIENTS] Errore fetch nutrienti per {fdc_id}: {resp.status_code} {error}")
+                return None
+
+            id_map = {
+                "calorie": {1008, 2047, 2048},
+                "proteine": {1003, 1162},
+                "lipidi": {1004, 1258},
+                "sodio": {1093, 1259},
+                "fibre": {1079, 1268, 1292}
+            }
+            name_map = {
+                "calorie": ["energy"],
+                "proteine": ["protein"],
+                "lipidi": ["fat", "lipid"],
+                "sodio": ["sodium"],
+                "fibre": ["fiber", "fibre"]
+            }
+
+            result = {"calorie": 0.0, "proteine": 0.0, "lipidi": 0.0, "sodio": 0.0, "fibre": 0.0}
+
+            food_nutrients = data.get("foodNutrients", [])
+            for nut in food_nutrients:
+                nutrient_info = nut.get("nutrient", nut)
+                nid = nutrient_info.get("id")
+                name = (nutrient_info.get("name") or "").lower()
+                amount = float(nut.get("amount", 0.0))
+
+                for key, ids in id_map.items():
+                    if nid in ids:
+                        result[key] = amount
+                        break
+                for key, keywords in name_map.items():
+                    if result[key] == 0.0 and any(kw in name for kw in keywords):
+                        result[key] = amount
+                        break
+
+            label_nutrients = data.get("labelNutrients", {})
+            if label_nutrients:
+                for key, field_map in {
+                    "calorie": ["calories", "energy"],
+                    "proteine": ["protein"],
+                    "lipidi": ["fat", "totalFat"],
+                    "sodio": ["sodium"],
+                    "fibre": ["fiber", "dietaryFiber"]
+                }.items():
+                    if result[key] == 0.0:
+                        for field in field_map:
+                            if field in label_nutrients:
+                                val = float(label_nutrients[field].get("value", 0.0))
+                                result[key] = val
+                                break
+
+            missing = [k for k, v in result.items() if v == 0.0]
+            if missing:
+                print(f"[FETCH NUTRIENTS] Nutrienti mancanti: {missing}")
+            else:
+                print("[FETCH NUTRIENTS] Nutrienti trovati:", result)
+
+            return result
+        except Exception as e:
+            print(f"[FETCH NUTRIENTS] Eccezione: {e}")
+            return None
+
+
+if __name__ == "__main__":
+    app = NutritionCalculator()
+    app.mainloop()

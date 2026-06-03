@@ -1,31 +1,20 @@
 import customtkinter as ctk
 from tkinter import messagebox
+import requests
+import threading
 
-# Database locale fittizio (Valori riferiti a 100g di prodotto)
-# Per inserire un alimento reale, il nome digitato dovrà corrispondere a queste chiavi.
-DATABASE_ALIMENTI = {
-    "farina": {"calorie": 364.0, "proteine": 10.0, "lipidi": 1.0, "sodio": 2.0, "fibre": 2.7},
-    "acqua": {"calorie": 0.0, "proteine": 0.0, "lipidi": 0.0, "sodio": 0.0, "fibre": 0.0},
-    "lievito": {"calorie": 105.0, "proteine": 8.0, "lipidi": 1.9, "sodio": 51.0, "fibre": 5.4},
-    "sale": {"calorie": 0.0, "proteine": 0.0, "lipidi": 0.0, "sodio": 38758.0, "fibre": 0.0},
-    "pomodoro": {"calorie": 18.0, "proteine": 0.9, "lipidi": 0.2, "sodio": 5.0, "fibre": 1.2},
-    "mozzarella": {"calorie": 280.0, "proteine": 28.0, "lipidi": 17.0, "sodio": 160.0, "fibre": 0.0},
-    "mozzarella di bufala": {"calorie": 288.0, "proteine": 16.7, "lipidi": 24.4, "sodio": 16.0, "fibre": 0.0},
-    "patate": {"calorie": 77.0, "proteine": 2.0, "lipidi": 0.1, "sodio": 6.0, "fibre": 2.2},
-    "salsiccia": {"calorie": 346.0, "proteine": 14.0, "lipidi": 31.0, "sodio": 845.0, "fibre": 0.0},
-    "mortadella": {"calorie": 288.0, "proteine": 15.7, "lipidi": 25.0, "sodio": 900.0, "fibre": 0.0},
-}
+API_KEY = "Hola3CZ5B8PwOBJx02Lay9b6ki9E3CZu4cGHbNxH"
+USDA_URL = "https://api.nal.usda.gov/fdc/v1/foods/search"
 
-class CalcolatoreNutrizionale(ctk.CTk):
+class CalcolatoreNutrizionaleUSDA(ctk.CTk):
     def __init__(self):
         super().__init__()
         
-        self.title("Calcolatore Valori Nutrizionali")
-        self.geometry("900x600")
-        ctk.set_appearance_mode("dark")  # Opzioni: "system", "dark", "light"
+        self.title("Calcolatore Valori Nutrizionali - USDA FoodData Central")
+        self.geometry("1050x650") # Leggermente allargata per far spazio al pulsante "X"
+        ctk.set_appearance_mode("dark")
         ctk.set_default_color_theme("blue")
 
-        # Configurazione del layout a 2 colonne
         self.grid_columnconfigure(0, weight=1, uniform="col")
         self.grid_columnconfigure(1, weight=1, uniform="col")
         self.grid_rowconfigure(0, weight=1)
@@ -36,43 +25,36 @@ class CalcolatoreNutrizionale(ctk.CTk):
         self.crea_lato_sinistro()
         self.crea_lato_destro()
 
-        # Aggiungo la prima riga vuota di default
+        # Inizializza con la prima riga vuota
         self.aggiungi_riga()
 
     def crea_lato_sinistro(self):
-        # Container principale per la colonna sinistra
         self.left_container = ctk.CTkFrame(self)
         self.left_container.grid(row=0, column=0, padx=20, pady=20, sticky="nsew")
         self.left_container.grid_rowconfigure(0, weight=1)
         self.left_container.grid_columnconfigure(0, weight=1)
 
-        # Frame scrollabile per poter inserire fino a 15 ingredienti
-        self.scroll_frame = ctk.CTkScrollableFrame(self.left_container, label_text="Lista Alimenti (Max 15)")
+        self.scroll_frame = ctk.CTkScrollableFrame(self.left_container, label_text="Lista Alimenti (Cerca in Inglese - Max 15)")
         self.scroll_frame.grid(row=0, column=0, padx=10, pady=10, sticky="nsew")
 
-        # Pulsante per aggiungere nuove righe
-        self.add_btn = ctk.CTkButton(self.left_container, text="+ Aggiungi Alimento", command=self.aggiungi_riga, fg_color="transparent", border_width=1)
+        self.add_btn = ctk.CTkButton(self.left_container, text="+ Aggiungi Riga", command=self.aggiungi_riga, fg_color="transparent", border_width=1)
         self.add_btn.grid(row=1, column=0, padx=10, pady=(0, 10), sticky="ew")
 
-        # Pulsante finale per il calcolo
         self.calc_btn = ctk.CTkButton(self.left_container, text="Calcola valori nutrizionali", command=self.calcola_valori, height=40, font=("Arial", 14, "bold"))
         self.calc_btn.grid(row=2, column=0, padx=10, pady=(0, 20), sticky="ew")
 
     def crea_lato_destro(self):
-        # Container principale per la colonna destra
         self.right_frame = ctk.CTkFrame(self)
         self.right_frame.grid(row=0, column=1, padx=20, pady=20, sticky="nsew")
 
-        titolo_tabella = ctk.CTkLabel(self.right_frame, text="Riepilogo Totale", font=("Arial", 20, "bold"))
+        titolo_tabella = ctk.CTkLabel(self.right_frame, text="Riepilogo Totale (USDA)", font=("Arial", 20, "bold"))
         titolo_tabella.pack(pady=(20, 30))
 
-        # Intestazione della Tabella
         header_frame = ctk.CTkFrame(self.right_frame, fg_color=("gray80", "gray30"))
         header_frame.pack(fill="x", padx=20, pady=5)
         ctk.CTkLabel(header_frame, text="Valore Nutrizionale", width=150, anchor="w", font=("Arial", 14, "bold")).pack(side="left", padx=10, pady=5)
         ctk.CTkLabel(header_frame, text="Totale", width=100, anchor="e", font=("Arial", 14, "bold")).pack(side="right", padx=10, pady=5)
 
-        # Struttura dati per aggiornare facilmente i testi
         self.risultati_vars = {
             "Calorie": {"var": ctk.StringVar(value="0.00"), "unita": "kcal"},
             "Proteine": {"var": ctk.StringVar(value="0.00"), "unita": "g"},
@@ -81,15 +63,12 @@ class CalcolatoreNutrizionale(ctk.CTk):
             "Fibre": {"var": ctk.StringVar(value="0.00"), "unita": "g"}
         }
 
-        # Creazione delle righe della tabella
         for nutriente, info in self.risultati_vars.items():
             row_frame = ctk.CTkFrame(self.right_frame)
             row_frame.pack(fill="x", padx=20, pady=2)
             
-            # Etichetta Nutriente (es. Calorie)
             ctk.CTkLabel(row_frame, text=nutriente, width=150, anchor="w").pack(side="left", padx=10, pady=5)
             
-            # Frame per Valore + Unità di misura allineato a destra
             val_frame = ctk.CTkFrame(row_frame, fg_color="transparent")
             val_frame.pack(side="right", padx=10)
             
@@ -103,85 +82,222 @@ class CalcolatoreNutrizionale(ctk.CTk):
         row_frame = ctk.CTkFrame(self.scroll_frame, fg_color="transparent")
         row_frame.pack(fill="x", pady=5, padx=5)
 
-        ing_entry = ctk.CTkEntry(row_frame, placeholder_text="Ingrediente")
-        ing_entry.pack(side="left", fill="x", expand=True, padx=(0, 5))
+        # 1. Input di Ricerca
+        search_entry = ctk.CTkEntry(row_frame, placeholder_text="Es. Chicken...", width=110)
+        search_entry.pack(side="left", padx=(0, 5))
 
-        qty_entry = ctk.CTkEntry(row_frame, placeholder_text="Quantità (g)", width=90)
+        # 2. Pulsante per avviare la ricerca
+        search_btn = ctk.CTkButton(row_frame, text="🔍", width=30)
+        search_btn.pack(side="left", padx=(0, 5))
+
+        # 3. Menu a tendina
+        combo = ctk.CTkComboBox(row_frame, values=["---"], state="disabled")
+        combo.pack(side="left", fill="x", expand=True, padx=(0, 5))
+
+        # 4. Input Quantità
+        qty_entry = ctk.CTkEntry(row_frame, placeholder_text="g", width=60)
         qty_entry.pack(side="left")
 
-        # Salviamo i riferimenti alle entry widget
-        self.ingredient_rows.append((ing_entry, qty_entry))
+        # 5. Pulsante Elimina Riga
+        del_btn = ctk.CTkButton(row_frame, text="✖", width=30, fg_color="#d9534f", hover_color="#c9302c")
+        del_btn.pack(side="left", padx=(5, 0))
 
-        # Se abbiamo raggiunto 15 ingredienti, disabilitiamo il pulsante
+        # Dizionario di gestione
+        row_data = {
+            "frame": row_frame,
+            "search_entry": search_entry,
+            "search_btn": search_btn,
+            "combo": combo,
+            "qty_entry": qty_entry,
+            "dati_usda": {}
+        }
+
+        # Binding Comandi
+        search_btn.configure(command=lambda r=row_data: self.avvia_ricerca_api(r))
+        search_entry.bind("<Return>", lambda event, r=row_data: self.avvia_ricerca_api(r))
+        del_btn.configure(command=lambda r=row_data: self.rimuovi_riga(r))
+
+        # Binding per lo scroll tramite rotella del mouse sul ComboBox
+        combo.bind("<MouseWheel>", lambda event, c=combo: self.scroll_combobox(event, c))
+        # Supporto scorrimento per Linux
+        combo.bind("<Button-4>", lambda event, c=combo: self.scroll_combobox(event, c))
+        combo.bind("<Button-5>", lambda event, c=combo: self.scroll_combobox(event, c))
+
+        self.ingredient_rows.append(row_data)
+
         if len(self.ingredient_rows) >= self.max_ingredients:
             self.add_btn.configure(state="disabled", text="Limite 15 raggiunto")
 
-    def calcola_valori(self):
-        totali = {
-            "Calorie": 0.0,
-            "Proteine": 0.0,
-            "Lipidi": 0.0,
-            "Sodio": 0.0,
-            "Fibre": 0.0
-        }
-
-        ingredienti_non_trovati = []
-
-        # Usiamo enumerate per sapere a quale riga ci troviamo (utile per i messaggi di errore)
-        for indice, (ing_entry, qty_entry) in enumerate(self.ingredient_rows):
-            nome = ing_entry.get().strip().lower()
-            qty_str = qty_entry.get().strip()
-
-            # 1. Se la riga è completamente vuota, la ignoriamo in modo sicuro
-            if not nome and not qty_str:
-                continue
+    # --- FUNZIONI DI GESTIONE INTERFACCIA ---
+    def rimuovi_riga(self, row_data):
+        """Elimina il frame della riga, la rimuove dalla lista e ricalcola i totali."""
+        row_data["frame"].destroy()
+        
+        if row_data in self.ingredient_rows:
+            self.ingredient_rows.remove(row_data)
+        
+        # Riabilita il pulsante "Aggiungi" se eravamo al limite
+        if len(self.ingredient_rows) < self.max_ingredients:
+            self.add_btn.configure(state="normal", text="+ Aggiungi Riga")
             
-            # 2. Se manca il nome ma c'è la quantità (Il problema che hai segnalato)
-            if not nome and qty_str:
-                messagebox.showwarning(
-                    "Dato Mancante", 
-                    f"Alla riga {indice + 1} hai inserito una quantità ({qty_str}g) ma non hai specificato l'ingrediente."
-                )
-                return  # Interrompe il calcolo finché l'utente non corregge
+        # Ricalcola in automatico dopo aver rimosso un alimento
+        self.calcola_valori()
 
-            # 3. Se c'è il nome ma manca la quantità
-            if nome and not qty_str:
-                messagebox.showwarning(
-                    "Dato Mancante", 
-                    f"Alla riga {indice + 1} hai inserito l'ingrediente '{nome.title()}' ma manca la quantità."
-                )
+    def scroll_combobox(self, event, combo):
+        """Permette di ciclare tra i valori del ComboBox con la rotella del mouse."""
+        if combo.cget("state") == "disabled":
+            return
+            
+        valori = combo.cget("values")
+        if not valori or valori[0] in ("---", "Nessun risultato trovato", "Ricerca in corso..."):
+            return
+        
+        corrente = combo.get()
+        try:
+            indice_attuale = valori.index(corrente)
+        except ValueError:
+            indice_attuale = 0
+
+        # Rilevamento scorrimento: Windows/Mac usano delta, Linux usa num
+        if event.delta > 0 or getattr(event, 'num', 0) == 4:
+            # Scorrimento in SU
+            nuovo_indice = max(0, indice_attuale - 1)
+        elif event.delta < 0 or getattr(event, 'num', 0) == 5:
+            # Scorrimento in GIU
+            nuovo_indice = min(len(valori) - 1, indice_attuale + 1)
+        else:
+            return
+
+        combo.set(valori[nuovo_indice])
+
+    # --- INTEGRAZIONE API USDA ---
+    def avvia_ricerca_api(self, row_data):
+        query = row_data["search_entry"].get().strip()
+        if not query:
+            return
+
+        row_data["search_btn"].configure(state="disabled")
+        row_data["combo"].configure(state="normal", values=["Ricerca in corso..."])
+        row_data["combo"].set("Ricerca in corso...")
+
+        threading.Thread(target=self.chiama_usda, args=(query, row_data), daemon=True).start()
+
+    def chiama_usda(self, query, row_data):
+        params = {
+            "api_key": API_KEY,
+            "query": query,
+            "pageSize": 50 
+        }
+        try:
+            risposta = requests.get(USDA_URL, params=params, timeout=10)
+            risposta.raise_for_status()
+            foods = risposta.json().get("foods", [])
+        except requests.RequestException as e:
+            self.after(0, lambda: self.gestisci_errore_api(row_data, str(e)))
+            return
+
+        priorita_tipo = { "Foundation": 1, "SR Legacy": 2, "Survey (FNDDS)": 3, "Branded": 4 }
+        foods_ordinati = sorted(foods, key=lambda f: (priorita_tipo.get(f.get("dataType", "Branded"), 5), len(f.get("description", ""))))
+
+        nuovi_dati_usda = {}
+        combo_values = []
+
+        for f in foods_ordinati:
+            desc = f.get("description", "").capitalize()
+            original_desc = desc
+            counter = 1
+            while desc in nuovi_dati_usda:
+                desc = f"{original_desc} ({counter})"
+                counter += 1
+            
+            nuovi_dati_usda[desc] = {
+                "fdcId": f.get("fdcId"),
+                "nutrienti": self.estrai_nutrienti(f.get("foodNutrients", []))
+            }
+            combo_values.append(desc)
+
+        self.after(0, lambda: self.popola_combo_risultati(row_data, combo_values, nuovi_dati_usda))
+
+    def estrai_nutrienti(self, food_nutrients):
+        valori = {"Calorie": 0.0, "Proteine": 0.0, "Lipidi": 0.0, "Sodio": 0.0, "Fibre": 0.0}
+        for nut in food_nutrients:
+            nid = nut.get("nutrientId")
+            val = float(nut.get("value", 0.0))
+            if nid == 1008: valori["Calorie"] = val             
+            elif nid == 1003: valori["Proteine"] = val          
+            elif nid == 1004: valori["Lipidi"] = val            
+            elif nid == 1093: valori["Sodio"] = val             
+            elif nid == 1079: valori["Fibre"] = val             
+        return valori
+
+    def popola_combo_risultati(self, row_data, combo_values, nuovi_dati_usda):
+        # Sicurezza: controlliamo che la riga esista ancora prima di aggiornarla
+        if not row_data["frame"].winfo_exists():
+            return
+
+        row_data["search_btn"].configure(state="normal")
+        row_data["dati_usda"] = nuovi_dati_usda
+
+        if combo_values:
+            row_data["combo"].configure(values=combo_values, state="normal")
+            row_data["combo"].set(combo_values[0])
+        else:
+            row_data["combo"].configure(values=["Nessun risultato trovato"], state="disabled")
+            row_data["combo"].set("Nessun risultato trovato")
+
+    def gestisci_errore_api(self, row_data, errore):
+        if not row_data["frame"].winfo_exists():
+            return
+
+        row_data["search_btn"].configure(state="normal")
+        row_data["combo"].configure(values=["Errore di connessione"], state="disabled")
+        row_data["combo"].set("Errore API USDA")
+        messagebox.showerror("Errore Rete", f"Impossibile collegarsi alla USDA FoodData Central:\n{errore}")
+
+    # --- CALCOLO FINALE ---
+    def calcola_valori(self):
+        totali = { "Calorie": 0.0, "Proteine": 0.0, "Lipidi": 0.0, "Sodio": 0.0, "Fibre": 0.0 }
+
+        for indice, row_data in enumerate(self.ingredient_rows):
+            ricerca = row_data["search_entry"].get().strip()
+            selezione = row_data["combo"].get()
+            qty_str = row_data["qty_entry"].get().strip()
+
+            if not ricerca and not qty_str and (selezione == "---" or selezione == ""):
+                continue
+
+            if not ricerca or selezione in ("---", "Nessun risultato trovato", "Ricerca in corso..."):
+                if qty_str:
+                    messagebox.showwarning("Dato Mancante", f"Alla riga {indice + 1} hai inserito una quantità ({qty_str}g) ma non hai cercato l'ingrediente.")
+                    return
+                continue
+
+            if not qty_str:
+                messagebox.showwarning("Dato Mancante", f"Alla riga {indice + 1} hai selezionato '{selezione}' ma manca la quantità.")
                 return
 
-            # A questo punto siamo sicuri che sia nome che quantità sono presenti
             try:
-                # Sostituiamo eventuali virgole con il punto per i decimali
                 quantita = float(qty_str.replace(',', '.'))
             except ValueError:
-                messagebox.showwarning("Errore di Inserimento", f"La quantità inserita per '{nome.title()}' non è un numero valido.")
+                messagebox.showwarning("Errore di Inserimento", f"La quantità inserita alla riga {indice + 1} non è un numero valido.")
                 return
 
-            # Calcolo dei valori effettivi
-            if nome in DATABASE_ALIMENTI:
-                valori = DATABASE_ALIMENTI[nome]
-                fattore = quantita / 100.0 # Valori base sono calcolati su 100g
+            dati_alimento = row_data["dati_usda"].get(selezione)
+            if not dati_alimento:
+                continue
 
-                totali["Calorie"] += valori["calorie"] * fattore
-                totali["Proteine"] += valori["proteine"] * fattore
-                totali["Lipidi"] += valori["lipidi"] * fattore
-                totali["Sodio"] += valori["sodio"] * fattore
-                totali["Fibre"] += valori["fibre"] * fattore
-            else:
-                ingredienti_non_trovati.append(nome.title())
+            nutrienti = dati_alimento["nutrienti"]
+            fattore = quantita / 100.0 
 
-        # Aggiornamento Variabili dell'interfaccia
+            totali["Calorie"] += nutrienti["Calorie"] * fattore
+            totali["Proteine"] += nutrienti["Proteine"] * fattore
+            totali["Lipidi"] += nutrienti["Lipidi"] * fattore
+            totali["Sodio"] += nutrienti["Sodio"] * fattore
+            totali["Fibre"] += nutrienti["Fibre"] * fattore
+
         for nutriente, valore_totale in totali.items():
             self.risultati_vars[nutriente]["var"].set(f"{valore_totale:.2f}")
 
-        # Se qualche alimento non è presente nel nostro "Database", avvisa l'utente
-        if ingredienti_non_trovati:
-            lista_err = ", ".join(ingredienti_non_trovati)
-            messagebox.showinfo("Alimenti mancanti", f"I seguenti alimenti non sono presenti nel database e sono stati ignorati:\n\n{lista_err}")
-            
 if __name__ == "__main__":
-    app = CalcolatoreNutrizionale()
+    app = CalcolatoreNutrizionaleUSDA()
     app.mainloop()

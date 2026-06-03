@@ -1,0 +1,273 @@
+import customtkinter as ctk
+from tkinter import messagebox
+import requests
+import threading
+
+API_KEY = "Hola3CZ5B8PwOBJx02Lay9b6ki9E3CZu4cGHbNxH"
+USDA_URL = "https://api.nal.usda.gov/fdc/v1/foods/search"
+
+class CalcolatoreNutrizionaleUSDA(ctk.CTk):
+    def __init__(self):
+        super().__init__()
+        
+        self.title("Calcolatore Valori Nutrizionali - USDA FoodData Central")
+        self.geometry("1000x650")
+        ctk.set_appearance_mode("dark")
+        ctk.set_default_color_theme("blue")
+
+        self.grid_columnconfigure(0, weight=1, uniform="col")
+        self.grid_columnconfigure(1, weight=1, uniform="col")
+        self.grid_rowconfigure(0, weight=1)
+
+        self.ingredient_rows = []
+        self.max_ingredients = 15
+
+        self.crea_lato_sinistro()
+        self.crea_lato_destro()
+
+        # Inizializza con la prima riga vuota
+        self.aggiungi_riga()
+
+    def crea_lato_sinistro(self):
+        self.left_container = ctk.CTkFrame(self)
+        self.left_container.grid(row=0, column=0, padx=20, pady=20, sticky="nsew")
+        self.left_container.grid_rowconfigure(0, weight=1)
+        self.left_container.grid_columnconfigure(0, weight=1)
+
+        self.scroll_frame = ctk.CTkScrollableFrame(self.left_container, label_text="Lista Alimenti (Cerca in Inglese - Max 15)")
+        self.scroll_frame.grid(row=0, column=0, padx=10, pady=10, sticky="nsew")
+
+        self.add_btn = ctk.CTkButton(self.left_container, text="+ Aggiungi Riga", command=self.aggiungi_riga, fg_color="transparent", border_width=1)
+        self.add_btn.grid(row=1, column=0, padx=10, pady=(0, 10), sticky="ew")
+
+        self.calc_btn = ctk.CTkButton(self.left_container, text="Calcola valori nutrizionali", command=self.calcola_valori, height=40, font=("Arial", 14, "bold"))
+        self.calc_btn.grid(row=2, column=0, padx=10, pady=(0, 20), sticky="ew")
+
+    def crea_lato_destro(self):
+        self.right_frame = ctk.CTkFrame(self)
+        self.right_frame.grid(row=0, column=1, padx=20, pady=20, sticky="nsew")
+
+        titolo_tabella = ctk.CTkLabel(self.right_frame, text="Riepilogo Totale (USDA)", font=("Arial", 20, "bold"))
+        titolo_tabella.pack(pady=(20, 30))
+
+        header_frame = ctk.CTkFrame(self.right_frame, fg_color=("gray80", "gray30"))
+        header_frame.pack(fill="x", padx=20, pady=5)
+        ctk.CTkLabel(header_frame, text="Valore Nutrizionale", width=150, anchor="w", font=("Arial", 14, "bold")).pack(side="left", padx=10, pady=5)
+        ctk.CTkLabel(header_frame, text="Totale", width=100, anchor="e", font=("Arial", 14, "bold")).pack(side="right", padx=10, pady=5)
+
+        self.risultati_vars = {
+            "Calorie": {"var": ctk.StringVar(value="0.00"), "unita": "kcal"},
+            "Proteine": {"var": ctk.StringVar(value="0.00"), "unita": "g"},
+            "Lipidi": {"var": ctk.StringVar(value="0.00"), "unita": "g"},
+            "Sodio": {"var": ctk.StringVar(value="0.00"), "unita": "mg"},
+            "Fibre": {"var": ctk.StringVar(value="0.00"), "unita": "g"}
+        }
+
+        for nutriente, info in self.risultati_vars.items():
+            row_frame = ctk.CTkFrame(self.right_frame)
+            row_frame.pack(fill="x", padx=20, pady=2)
+            
+            ctk.CTkLabel(row_frame, text=nutriente, width=150, anchor="w").pack(side="left", padx=10, pady=5)
+            
+            val_frame = ctk.CTkFrame(row_frame, fg_color="transparent")
+            val_frame.pack(side="right", padx=10)
+            
+            ctk.CTkLabel(val_frame, textvariable=info["var"], width=60, anchor="e", font=("Arial", 14, "bold")).pack(side="left")
+            ctk.CTkLabel(val_frame, text=info["unita"], width=35, anchor="w").pack(side="left", padx=(5, 0))
+
+    def aggiungi_riga(self):
+        if len(self.ingredient_rows) >= self.max_ingredients:
+            return
+
+        row_frame = ctk.CTkFrame(self.scroll_frame, fg_color="transparent")
+        row_frame.pack(fill="x", pady=5, padx=5)
+
+        # 1. Input di Ricerca
+        search_entry = ctk.CTkEntry(row_frame, placeholder_text="Es. Chicken...", width=110)
+        search_entry.pack(side="left", padx=(0, 5))
+
+        # 2. Pulsante per avviare la ricerca
+        search_btn = ctk.CTkButton(row_frame, text="🔍", width=30)
+        search_btn.pack(side="left", padx=(0, 5))
+
+        # 3. Menu a tendina per visualizzare solo le descrizioni (I risultati)
+        combo = ctk.CTkComboBox(row_frame, values=["---"], state="disabled")
+        combo.pack(side="left", fill="x", expand=True, padx=(0, 5))
+
+        # 4. Input Quantità
+        qty_entry = ctk.CTkEntry(row_frame, placeholder_text="g", width=60)
+        qty_entry.pack(side="left")
+
+        # Dizionario di gestione per questa specifica riga
+        row_data = {
+            "search_entry": search_entry,
+            "search_btn": search_btn,
+            "combo": combo,
+            "qty_entry": qty_entry,
+            "dati_usda": {}  # Qui memorizziamo fdcId e nutrienti estratti
+        }
+
+        # Assegna i comandi per la ricerca tramite bottone o tasto Invio
+        search_btn.configure(command=lambda r=row_data: self.avvia_ricerca_api(r))
+        search_entry.bind("<Return>", lambda event, r=row_data: self.avvia_ricerca_api(r))
+
+        self.ingredient_rows.append(row_data)
+
+        if len(self.ingredient_rows) >= self.max_ingredients:
+            self.add_btn.configure(state="disabled", text="Limite 15 raggiunto")
+
+    # --- INTEGRAZIONE API USDA ---
+    def avvia_ricerca_api(self, row_data):
+        query = row_data["search_entry"].get().strip()
+        if not query:
+            return
+
+        # Disabilita UI temporaneamente per far capire all'utente che sta caricando
+        row_data["search_btn"].configure(state="disabled")
+        row_data["combo"].configure(state="normal", values=["Ricerca in corso..."])
+        row_data["combo"].set("Ricerca in corso...")
+
+        # Eseguiamo la richiesta web in un thread separato per non freezare l'app
+        threading.Thread(target=self.chiama_usda, args=(query, row_data), daemon=True).start()
+
+    def chiama_usda(self, query, row_data):
+        params = {
+            "api_key": API_KEY,
+            "query": query,
+            "pageSize": 50 # Prendiamo un po' di risultati per poter applicare l'ordinamento avanzato
+        }
+        try:
+            risposta = requests.get(USDA_URL, params=params, timeout=10)
+            risposta.raise_for_status()
+            foods = risposta.json().get("foods", [])
+        except requests.RequestException as e:
+            self.after(0, lambda: self.gestisci_errore_api(row_data, str(e)))
+            return
+
+        # LOGICA DI ORDINAMENTO RICHIESTA DALL'UTENTE
+        # 1. Foundation, 2. SR Legacy, 3. Survey, 4. Branded
+        # A parità di categoria, predilige lunghezze descrittive più corte (alimenti semplici e puri)
+        priorita_tipo = {
+            "Foundation": 1,
+            "SR Legacy": 2,
+            "Survey (FNDDS)": 3,
+            "Branded": 4
+        }
+        
+        foods_ordinati = sorted(foods, key=lambda f: (
+            priorita_tipo.get(f.get("dataType", "Branded"), 5),
+            len(f.get("description", ""))
+        ))
+
+        nuovi_dati_usda = {}
+        combo_values = []
+
+        for f in foods_ordinati:
+            desc = f.get("description", "").capitalize()
+            
+            # Evitare descrizioni doppie identiche nel menu a tendina
+            original_desc = desc
+            counter = 1
+            while desc in nuovi_dati_usda:
+                desc = f"{original_desc} ({counter})"
+                counter += 1
+            
+            # SALVATAGGIO DEI DATI "DIETRO LE QUINTE"
+            # Manteniamo il fdcId in memoria come richiesto, pronto per essere letto al bisogno
+            nuovi_dati_usda[desc] = {
+                "fdcId": f.get("fdcId"),
+                "nutrienti": self.estrai_nutrienti(f.get("foodNutrients", []))
+            }
+            combo_values.append(desc)
+
+        # Aggiorniamo la UI tornando sul Main Thread
+        self.after(0, lambda: self.popola_combo_risultati(row_data, combo_values, nuovi_dati_usda))
+
+    def estrai_nutrienti(self, food_nutrients):
+        """Mappa gli ID nutrizionali standard della USDA ai nostri macronutrienti."""
+        valori = {"Calorie": 0.0, "Proteine": 0.0, "Lipidi": 0.0, "Sodio": 0.0, "Fibre": 0.0}
+        
+        for nut in food_nutrients:
+            nid = nut.get("nutrientId")
+            val = float(nut.get("value", 0.0))
+
+            if nid == 1008: valori["Calorie"] = val             # Energy (kcal)
+            elif nid == 1003: valori["Proteine"] = val          # Protein
+            elif nid == 1004: valori["Lipidi"] = val            # Total lipid (fat)
+            elif nid == 1093: valori["Sodio"] = val             # Sodium, Na
+            elif nid == 1079: valori["Fibre"] = val             # Fiber, total dietary
+        
+        return valori
+
+    def popola_combo_risultati(self, row_data, combo_values, nuovi_dati_usda):
+        row_data["search_btn"].configure(state="normal")
+        row_data["dati_usda"] = nuovi_dati_usda
+
+        if combo_values:
+            row_data["combo"].configure(values=combo_values, state="normal")
+            row_data["combo"].set(combo_values[0])
+        else:
+            row_data["combo"].configure(values=["Nessun risultato trovato"], state="disabled")
+            row_data["combo"].set("Nessun risultato trovato")
+
+    def gestisci_errore_api(self, row_data, errore):
+        row_data["search_btn"].configure(state="normal")
+        row_data["combo"].configure(values=["Errore di connessione"], state="disabled")
+        row_data["combo"].set("Errore API USDA")
+        messagebox.showerror("Errore Rete", f"Impossibile collegarsi alla USDA FoodData Central:\n{errore}")
+
+    # --- CALCOLO FINALE ---
+    def calcola_valori(self):
+        totali = { "Calorie": 0.0, "Proteine": 0.0, "Lipidi": 0.0, "Sodio": 0.0, "Fibre": 0.0 }
+
+        for indice, row_data in enumerate(self.ingredient_rows):
+            ricerca = row_data["search_entry"].get().strip()
+            selezione = row_data["combo"].get()
+            qty_str = row_data["qty_entry"].get().strip()
+
+            # Salta le righe non compilate in nessun campo
+            if not ricerca and not qty_str and (selezione == "---" or selezione == ""):
+                continue
+
+            # Gestione Errori per i campi parziali
+            if not ricerca or selezione in ("---", "Nessun risultato trovato", "Ricerca in corso..."):
+                if qty_str:
+                    messagebox.showwarning("Dato Mancante", f"Alla riga {indice + 1} hai inserito una quantità ({qty_str}g) ma non hai cercato e selezionato l'ingrediente.")
+                    return
+                continue
+
+            if not qty_str:
+                messagebox.showwarning("Dato Mancante", f"Alla riga {indice + 1} hai selezionato '{selezione}' ma manca la quantità.")
+                return
+
+            try:
+                quantita = float(qty_str.replace(',', '.'))
+            except ValueError:
+                messagebox.showwarning("Errore di Inserimento", f"La quantità inserita alla riga {indice + 1} non è un numero valido.")
+                return
+
+            # ESTRAZIONE DATI MEMORIZZATI NEL DIZIONARIO
+            dati_alimento = row_data["dati_usda"].get(selezione)
+            if not dati_alimento:
+                continue
+
+            # N.B. I dati dell'API USDA FoodData Central Search sono sempre parametrizzati per 100g di prodotto
+            nutrienti = dati_alimento["nutrienti"]
+            
+            # fdc_id = dati_alimento["fdcId"] # -> Il FDC ID è qui disponibile come richiesto
+
+            fattore = quantita / 100.0 
+
+            totali["Calorie"] += nutrienti["Calorie"] * fattore
+            totali["Proteine"] += nutrienti["Proteine"] * fattore
+            totali["Lipidi"] += nutrienti["Lipidi"] * fattore
+            totali["Sodio"] += nutrienti["Sodio"] * fattore
+            totali["Fibre"] += nutrienti["Fibre"] * fattore
+
+        # Aggiornamento UI della parte destra
+        for nutriente, valore_totale in totali.items():
+            self.risultati_vars[nutriente]["var"].set(f"{valore_totale:.2f}")
+
+if __name__ == "__main__":
+    app = CalcolatoreNutrizionaleUSDA()
+    app.mainloop()
