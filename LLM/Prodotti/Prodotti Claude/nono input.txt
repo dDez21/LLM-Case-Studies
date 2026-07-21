@@ -39,10 +39,8 @@ COLORS = {
 API_KEY  = "Hola3CZ5B8PwOBJx02Lay9b6ki9E3CZu4cGHbNxH"
 BASE_URL = "https://api.nal.usda.gov/fdc/v1"
 
-DATA_TYPE_PRIORITY = {"Foundation": 0, "SR Legacy": 1, "Survey (FNDDS)": 2, "Branded": 3}
-MAX_SUGGESTIONS    = 10
+MAX_SUGGESTIONS = 10
 
-# Nutrient IDs used by USDA (some have legacy + new IDs)
 NUTRIENT_IDS: dict[str, set] = {
     "calories": {1008, 208},
     "proteins": {1003, 203},
@@ -51,47 +49,72 @@ NUTRIENT_IDS: dict[str, set] = {
     "fibers":   {1079, 291},
 }
 
-SIMPLE_WORDS  = {"raw", "fresh", "plain", "whole", "cooked", "boiled",
-                 "steamed", "roasted", "grilled", "baked", "dried", "skinless"}
+SIMPLE_WORDS  = {"raw", "fresh", "plain", "whole", "cooked", "boiled", "steamed",
+                 "roasted", "grilled", "baked", "dried", "skinless"}
 COMPLEX_WORDS = {"rotisserie", "breaded", "commercial", "frozen", "restaurant",
                  "fast", "takeout", "ready-to-eat", "seasoned", "prepared", "flavored"}
 
 
-def _sort_key(food: dict) -> tuple:
-    dt   = food.get("dataType", "Branded")
-    prio = DATA_TYPE_PRIORITY.get(dt, 4)
+def _simplicity_key(food: dict) -> tuple:
+    """Within a data-type group, sort simpler/more generic foods first."""
     desc = food.get("description", "").lower()
     bad  =  sum(2 for w in COMPLEX_WORDS if w in desc)
     good = -sum(1 for w in SIMPLE_WORDS  if w in desc)
-    return (prio, bad + good, len(desc))
+    return (bad + good, len(desc))
 
 
 def usda_search(query: str) -> list[dict]:
-    """Search USDA FoodData Central; return sorted suggestions."""
-    params = [
-        ("query",    query),
-        ("api_key",  API_KEY),
-        ("pageSize", "30"),
-        ("dataType", "Foundation"),
-        ("dataType", "SR Legacy"),
-        ("dataType", "Survey (FNDDS)"),
-        ("dataType", "Branded"),
-    ]
-    url = f"{BASE_URL}/foods/search?" + urllib.parse.urlencode(params)
-    with urllib.request.urlopen(url, timeout=10) as r:
-        data = json.loads(r.read())
-    return sorted(data.get("foods", []), key=_sort_key)[:MAX_SUGGESTIONS]
+    """
+    Two parallel requests, kept strictly separate:
+      • Request 1 – Foundation + SR Legacy  (scientific / generic foods)
+      • Request 2 – Survey (FNDDS) + Branded  (survey meals & commercial products)
+
+    Foundation / SR Legacy results always appear first.
+    No wildcards: the USDA full-text engine handles partial words natively.
+    """
+    priority_foods: list[dict] = []
+    fallback_foods: list[dict] = []
+
+    def _call(data_types: list[str], target: list[dict]) -> None:
+        params = (
+            [("query", query), ("api_key", API_KEY), ("pageSize", "25")]
+            + [("dataType", dt) for dt in data_types]
+        )
+        url = f"{BASE_URL}/foods/search?" + urllib.parse.urlencode(params)
+        try:
+            with urllib.request.urlopen(url, timeout=10) as r:
+                target.extend(json.loads(r.read()).get("foods", []))
+        except Exception:
+            pass
+
+    t1 = threading.Thread(
+        target=_call, args=(["Foundation", "SR Legacy"], priority_foods), daemon=True)
+    t2 = threading.Thread(
+        target=_call, args=(["Survey (FNDDS)", "Branded"], fallback_foods), daemon=True)
+    t1.start(); t2.start()
+    t1.join();  t2.join()
+
+    top_priority = sorted(priority_foods, key=_simplicity_key)[:5]
+    top_fallback = sorted(fallback_foods, key=_simplicity_key)[:5]
+
+    # Merge keeping order: Foundation/SR Legacy first, then Survey/Branded
+    seen: set[int] = set()
+    merged: list[dict] = []
+    for food in top_priority + top_fallback:
+        fid = food.get("fdcId")
+        if fid not in seen:
+            seen.add(fid)
+            merged.append(food)
+
+    return merged[:MAX_SUGGESTIONS]
 
 
-def usda_nutrients(fdc_id: int, qty_g: float) -> dict[str, float]:
-    """Fetch nutrient detail for fdc_id and scale proportionally to qty_g."""
+def usda_nutrients(fdc_id: int, qty_g: float) -> dict:
     url = f"{BASE_URL}/food/{fdc_id}?api_key={API_KEY}"
     with urllib.request.urlopen(url, timeout=10) as r:
         data = json.loads(r.read())
-
-    raw: dict[str, float] = {k: 0.0 for k in NUTRIENT_IDS}
+    raw = {k: 0.0 for k in NUTRIENT_IDS}
     for n in data.get("foodNutrients", []):
-        # Handles both Foundation/SR Legacy and Branded response structures
         nobj = n.get("nutrient") or {}
         nid  = nobj.get("id") or n.get("nutrientId") or n.get("nutrientNumber")
         amt  = float(n.get("amount") or n.get("value") or 0)
@@ -99,20 +122,27 @@ def usda_nutrients(fdc_id: int, qty_g: float) -> dict[str, float]:
             if nid in ids:
                 raw[key] = amt
                 break
-
     f = qty_g / 100.0
     return {k: math.ceil(v * f * 100) / 100 for k, v in raw.items()}
 
 
 def fmt_qty(value: float) -> str:
-    """Format a quantity without exponential notation and without trailing zeros."""
     return format(Decimal(str(value)).normalize(), "f")
 
 
-# ─── Autocomplete dropdown ─────────────────────────────────────────────────────
+# ─── Dropdown ─────────────────────────────────────────────────────────────────
 class Dropdown(tk.Toplevel):
-    """Floating suggestion list anchored below a CTkEntry widget."""
+    """
+    Floating suggestion list.
 
+    Scroll support:
+      - Mac / Linux  : events go to the widget under the cursor, so we bind
+                       <MouseWheel> / <Button-4> / <Button-5> directly on canvas,
+                       inner frame, and every button.
+      - Windows      : events go to the *focused* widget (the CTkEntry); the app
+                       intercepts them in _redirect_scroll() and forwards them here
+                       when the pointer is over this window.
+    """
     ROW_H = 38
 
     def __init__(self, root: ctk.CTk, anchor: ctk.CTkEntry,
@@ -122,6 +152,7 @@ class Dropdown(tk.Toplevel):
         self.wm_attributes("-topmost", True)
         self.configure(bg=COLORS["border"])
         self._on_select = on_select
+        self._canvas: tk.Canvas | None = None
         self._build(anchor, results)
 
     def _build(self, anchor: ctk.CTkEntry, results: list[dict]) -> None:
@@ -133,6 +164,8 @@ class Dropdown(tk.Toplevel):
         self.geometry(f"{w}x{h}+{x}+{y}")
 
         canvas = tk.Canvas(self, bg=COLORS["dd_bg"], highlightthickness=0, bd=0)
+        self._canvas = canvas
+
         if h >= 304:
             sb = tk.Scrollbar(self, orient="vertical", command=canvas.yview)
             canvas.configure(yscrollcommand=sb.set)
@@ -141,9 +174,14 @@ class Dropdown(tk.Toplevel):
 
         inner = tk.Frame(canvas, bg=COLORS["dd_bg"])
         win   = canvas.create_window((0, 0), window=inner, anchor="nw")
-        inner.bind("<Configure>", lambda e: canvas.configure(
-            scrollregion=canvas.bbox("all")))
-        canvas.bind("<Configure>", lambda e: canvas.itemconfigure(win, width=e.width))
+        inner.bind("<Configure>",
+                   lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>",
+                    lambda e: canvas.itemconfigure(win, width=e.width))
+
+        # Mac / Linux scroll support: bind to canvas and inner frame
+        self._bind_wheel(canvas)
+        self._bind_wheel(inner)
 
         for i, food in enumerate(results):
             desc = food.get("description", "")
@@ -160,6 +198,27 @@ class Dropdown(tk.Toplevel):
             btn.pack(fill="x")
             btn.bind("<Enter>", lambda e, b=btn:       b.configure(bg=COLORS["dd_hover"]))
             btn.bind("<Leave>", lambda e, b=btn, c=bg: b.configure(bg=c))
+            self._bind_wheel(btn)  # Mac / Linux: bind to every button too
+
+    def _bind_wheel(self, widget: tk.BaseWidget) -> None:
+        """Bind mouse-wheel events on widget to scroll the canvas (Mac / Linux)."""
+        c = self._canvas
+
+        def _scroll_win(e):
+            c.yview_scroll(int(-1 * (e.delta / 120)), "units")
+            return "break"
+
+        def _scroll_up(e):
+            c.yview_scroll(-1, "units")
+            return "break"
+
+        def _scroll_down(e):
+            c.yview_scroll(1, "units")
+            return "break"
+
+        widget.bind("<MouseWheel>", _scroll_win)
+        widget.bind("<Button-4>",   _scroll_up)
+        widget.bind("<Button-5>",   _scroll_down)
 
     def _pick(self, food: dict) -> None:
         self._on_select(food)
@@ -178,14 +237,10 @@ class NutritionalCalculator(ctk.CTk):
         self.geometry("1280x780")
         self.minsize(1000, 600)
         self.configure(fg_color=COLORS["bg_app"])
-
-        # Each row dict: frame, ing_entry, qty_entry,
-        #                fdc_id, confirmed_text, debounce_job, dropdown
         self.ingredient_rows: list[dict] = []
-
         self._build_layout()
-        # Close any open dropdown when clicking anywhere on the main window
-        self.bind("<Button-1>", lambda e: self._close_all_dropdowns())
+        # Force-close all dropdowns on any click in the main window
+        self.bind("<Button-1>", lambda e: self._close_all_dropdowns(force=True))
 
     # ── Layout ────────────────────────────────────────────────────────────────
     def _build_layout(self) -> None:
@@ -305,13 +360,15 @@ class NutritionalCalculator(ctk.CTk):
         qty_entry.grid(row=0, column=2, padx=4, sticky="w")
 
         row: dict = {
-            "frame":          row_frame,
-            "ing_entry":      ing_entry,
-            "qty_entry":      qty_entry,
-            "fdc_id":         None,
-            "confirmed_text": "",
-            "debounce_job":   None,
-            "dropdown":       None,
+            "frame":            row_frame,
+            "ing_entry":        ing_entry,
+            "qty_entry":        qty_entry,
+            "fdc_id":           None,
+            "confirmed_text":   "",
+            "debounce_job":     None,
+            "dropdown":         None,
+            "search_indicator": None,
+            "search_token":     0,   # incremented on every keystroke to cancel stale results
         }
 
         del_btn = ctk.CTkButton(
@@ -322,10 +379,22 @@ class NutritionalCalculator(ctk.CTk):
         )
         del_btn.grid(row=0, column=3, padx=(4, 2))
 
+        # ── Entry bindings ────────────────────────────────────────────────────
         ing_entry.bind("<KeyRelease>", lambda e, r=row: self._on_key(r))
         ing_entry.bind("<<Paste>>",    lambda e, r=row: self.after(50, lambda: self._on_key(r)))
-        ing_entry.bind("<Escape>",     lambda e, r=row: self._close_dropdown(r))
-        ing_entry.bind("<FocusOut>",   lambda e, r=row: self.after(250, lambda: self._close_dropdown(r)))
+        ing_entry.bind("<Escape>",     lambda e, r=row: self._close_dropdown(r, force=True))
+        ing_entry.bind("<Tab>",        lambda e, r=row: self._close_dropdown(r, force=True))
+        ing_entry.bind("<FocusOut>",   lambda e, r=row: self.after(250,
+                                                          lambda: self._close_dropdown(r)))
+
+        # Windows: wheel events land on the focused entry; redirect them to
+        # the dropdown canvas whenever the pointer is inside the dropdown.
+        ing_entry.bind("<MouseWheel>",
+                       lambda e, r=row: self._redirect_scroll(r, e.delta, "win"))
+        ing_entry.bind("<Button-4>",
+                       lambda e, r=row: self._redirect_scroll(r, None, "up"))
+        ing_entry.bind("<Button-5>",
+                       lambda e, r=row: self._redirect_scroll(r, None, "down"))
 
         self.ingredient_rows.append(row)
         self._refresh_numbers()
@@ -334,7 +403,8 @@ class NutritionalCalculator(ctk.CTk):
             self.add_btn.configure(state="disabled")
 
     def _remove_row(self, row: dict) -> None:
-        self._close_dropdown(row)
+        self._close_dropdown(row, force=True)
+        self._hide_search_indicator(row)
         if row in self.ingredient_rows:
             self.ingredient_rows.remove(row)
         row["frame"].destroy()
@@ -350,45 +420,124 @@ class NutritionalCalculator(ctk.CTk):
                     child.configure(text=f"{i + 1:02d}")
                     break
 
-    # ── Search & dropdown ─────────────────────────────────────────────────────
+    # ── Search ────────────────────────────────────────────────────────────────
     def _on_key(self, row: dict) -> None:
         text = row["ing_entry"].get().strip()
 
-        # Invalidate confirmed selection if the user edits the text
+        # Invalidate confirmed selection when the user edits the field
         if row["fdc_id"] and text != row["confirmed_text"]:
             row["fdc_id"] = None
             row["confirmed_text"] = ""
 
+        # Cancel previous debounce and advance token (invalidates running searches)
         if row["debounce_job"]:
             self.after_cancel(row["debounce_job"])
             row["debounce_job"] = None
+        row["search_token"] += 1
 
         if len(text) < 2:
-            self._close_dropdown(row)
+            self._close_dropdown(row, force=True)
+            self._hide_search_indicator(row)
             return
 
         row["debounce_job"] = self.after(420, lambda q=text: self._do_search(row, q))
 
     def _do_search(self, row: dict, query: str) -> None:
-        def _bg():
+        token = row["search_token"]
+        self._show_search_indicator(row)   # ← "Ricerca in corso…"
+
+        def _bg() -> None:
             try:
                 results = usda_search(query)
-                self.after(0, lambda: self._show_dropdown(row, results))
             except Exception:
-                pass
+                results = []
+            self.after(0, lambda r=results, t=token: self._on_search_done(row, r, t))
+
         threading.Thread(target=_bg, daemon=True).start()
 
-    def _show_dropdown(self, row: dict, results: list[dict]) -> None:
-        self._close_dropdown(row)
+    def _on_search_done(self, row: dict, results: list, token: int) -> None:
+        if token != row["search_token"]:
+            return  # Stale result from a superseded query – discard
+        self._hide_search_indicator(row)
+        if results:
+            self._show_dropdown(row, results)
+
+    # ── Search indicator ──────────────────────────────────────────────────────
+    def _show_search_indicator(self, row: dict) -> None:
+        """Show a small 'Ricerca in corso…' banner below the entry."""
+        self._hide_search_indicator(row)
+        self._close_dropdown(row, force=True)
+        ing = row["ing_entry"]
+        try:
+            ing.update_idletasks()
+            x = ing.winfo_rootx()
+            y = ing.winfo_rooty() + ing.winfo_height() + 2
+            w = max(ing.winfo_width(), 220)
+
+            ind = tk.Toplevel(self)
+            ind.overrideredirect(True)
+            ind.wm_attributes("-topmost", True)
+            ind.configure(bg=COLORS["border"])
+            ind.geometry(f"{w}x34+{x}+{y}")
+
+            tk.Label(
+                ind, text="  🔍  Ricerca in corso…",
+                bg=COLORS["dd_bg"], fg=COLORS["text_secondary"],
+                font=("Segoe UI", 11), anchor="w"
+            ).pack(fill="both", expand=True, padx=1, pady=1)
+
+            row["search_indicator"] = ind
+        except Exception:
+            pass
+
+    def _hide_search_indicator(self, row: dict) -> None:
+        ind = row.get("search_indicator")
+        if ind:
+            try:
+                ind.destroy()
+            except tk.TclError:
+                pass
+            row["search_indicator"] = None
+
+    # ── Dropdown management ───────────────────────────────────────────────────
+    def _redirect_scroll(self, row: dict, delta, direction: str):
+        """
+        Windows fix: the focused entry receives wheel events even when the
+        pointer is over the dropdown Toplevel. Forward those events to the
+        dropdown canvas when the cursor is inside its bounds.
+        """
+        dd = row.get("dropdown")
+        if not dd:
+            return None
+        try:
+            if not dd.winfo_exists():
+                return None
+            px, py = self.winfo_pointerx(), self.winfo_pointery()
+            dx, dy = dd.winfo_rootx(), dd.winfo_rooty()
+            dw, dh = dd.winfo_width(), dd.winfo_height()
+            if dx <= px < dx + dw and dy <= py < dy + dh:
+                c = dd._canvas
+                if direction == "win":
+                    c.yview_scroll(int(-1 * (delta / 120)), "units")
+                elif direction == "up":
+                    c.yview_scroll(-1, "units")
+                else:
+                    c.yview_scroll(1, "units")
+                return "break"
+        except tk.TclError:
+            pass
+        return None
+
+    def _show_dropdown(self, row: dict, results: list) -> None:
+        self._close_dropdown(row, force=True)
         if not results:
             return
-
         ing = row["ing_entry"]
 
         def on_select(food: dict) -> None:
             row["fdc_id"]         = food["fdcId"]
             row["confirmed_text"] = food["description"]
-            row["dropdown"]       = None
+            row["dropdown"]       = None   # clear before Toplevel.destroy()
             ing.delete(0, "end")
             ing.insert(0, food["description"])
 
@@ -397,18 +546,35 @@ class NutritionalCalculator(ctk.CTk):
         except Exception:
             pass
 
-    def _close_dropdown(self, row: dict) -> None:
+    def _close_dropdown(self, row: dict, force: bool = False) -> None:
         dd = row.get("dropdown")
-        if dd:
+        if not dd:
+            return
+
+        if not force:
+            # While the pointer is inside the dropdown, defer closing so that
+            # scrolling with the mouse wheel never dismisses the list.
             try:
-                dd.destroy()
+                if dd.winfo_exists():
+                    px, py = self.winfo_pointerx(), self.winfo_pointery()
+                    dx, dy = dd.winfo_rootx(), dd.winfo_rooty()
+                    dw, dh = dd.winfo_width(), dd.winfo_height()
+                    if dx <= px < dx + dw and dy <= py < dy + dh:
+                        # Re-check every 300 ms until the pointer leaves
+                        self.after(300, lambda r=row: self._close_dropdown(r))
+                        return
             except tk.TclError:
                 pass
-            row["dropdown"] = None
 
-    def _close_all_dropdowns(self) -> None:
+        try:
+            dd.destroy()
+        except tk.TclError:
+            pass
+        row["dropdown"] = None
+
+    def _close_all_dropdowns(self, force: bool = False) -> None:
         for row in self.ingredient_rows:
-            self._close_dropdown(row)
+            self._close_dropdown(row, force=force)
 
     # ── Right panel ───────────────────────────────────────────────────────────
     def _build_right_panel(self) -> None:
@@ -472,13 +638,12 @@ class NutritionalCalculator(ctk.CTk):
 
     # ── Calculation ───────────────────────────────────────────────────────────
     def _on_calculate(self) -> None:
-        self._close_all_dropdowns()
+        self._close_all_dropdowns(force=True)
         to_fetch: list[dict] = []
 
         for row in self.ingredient_rows:
             name = row["ing_entry"].get().strip()
             qty  = row["qty_entry"].get().strip()
-
             if not name and not qty:
                 continue
             if not name:
@@ -506,7 +671,6 @@ class NutritionalCalculator(ctk.CTk):
                 self._set_status(
                     f"⚠  Seleziona «{name}» dall'elenco suggerimenti.", COLORS["warning"])
                 return
-
             to_fetch.append({"name": name, "quantity": qty_val, "fdc_id": row["fdc_id"]})
 
         if not to_fetch:
@@ -528,7 +692,7 @@ class NutritionalCalculator(ctk.CTk):
                 errors.append(item["name"])
         self.after(0, lambda: self._finish(results, errors))
 
-    def _finish(self, results: list[dict], errors: list[str]) -> None:
+    def _finish(self, results: list, errors: list) -> None:
         self.calc_btn.configure(state="normal", text="⚡  Calcola")
         if errors:
             self._reset_table()
@@ -568,7 +732,6 @@ class NutritionalCalculator(ctk.CTk):
                 ).grid(row=i + 1, column=col, padx=1, pady=1,
                        sticky="ew", ipadx=8, ipady=5)
 
-        # Ceil each total
         for key in totals:
             totals[key] = math.ceil(totals[key] * 100) / 100
 

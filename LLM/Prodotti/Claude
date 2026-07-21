@@ -1,0 +1,810 @@
+import math
+import threading
+import urllib.request
+import urllib.parse
+import json
+import tkinter as tk
+import customtkinter as ctk
+from decimal import Decimal
+
+# ─── Theme ────────────────────────────────────────────────────────────────────
+ctk.set_appearance_mode("dark")
+ctk.set_default_color_theme("blue")
+
+COLORS = {
+    "bg_app":        "#13152a",
+    "bg_panel":      "#1a1d2e",
+    "bg_row_even":   "#22253a",
+    "bg_row_odd":    "#1e2133",
+    "bg_header":     "#2d5be3",
+    "bg_total":      "#1b3fa0",
+    "accent":        "#2d5be3",
+    "accent_hover":  "#3d6ef3",
+    "add_btn":       "#1a4a2e",
+    "add_btn_hov":   "#215c38",
+    "del_btn":       "#4a1a1a",
+    "del_btn_hov":   "#6b2020",
+    "success":       "#22c55e",
+    "warning":       "#f59e0b",
+    "error":         "#ef4444",
+    "text_primary":  "#e8eaf6",
+    "text_secondary":"#8892b0",
+    "border":        "#2d3561",
+    "dd_bg":         "#1e2133",
+    "dd_even":       "#22253a",
+    "dd_hover":      "#2d5be3",
+}
+
+# ─── USDA FoodData Central ─────────────────────────────────────────────────────
+API_KEY  = "Hola3CZ5B8PwOBJx02Lay9b6ki9E3CZu4cGHbNxH"
+BASE_URL = "https://api.nal.usda.gov/fdc/v1"
+
+MAX_SUGGESTIONS = 10
+
+NUTRIENT_IDS: dict[str, set] = {
+    "calories": {1008, 208},
+    "proteins": {1003, 203},
+    "lipids":   {1004, 204},
+    "sodium":   {1093, 307},
+    "fibers":   {1079, 291},
+}
+
+SIMPLE_WORDS  = {"raw", "fresh", "plain", "whole", "cooked", "boiled", "steamed",
+                 "roasted", "grilled", "baked", "dried", "skinless"}
+COMPLEX_WORDS = {"rotisserie", "breaded", "commercial", "frozen", "restaurant",
+                 "fast", "takeout", "ready-to-eat", "seasoned", "prepared", "flavored"}
+
+
+def _simplicity_key(food: dict) -> tuple:
+    """Within a data-type group, sort simpler/more generic foods first."""
+    desc = food.get("description", "").lower()
+    bad  =  sum(2 for w in COMPLEX_WORDS if w in desc)
+    good = -sum(1 for w in SIMPLE_WORDS  if w in desc)
+    return (bad + good, len(desc))
+
+
+def _add_wildcard(text: str) -> str:
+    """
+    Append * to the last token for prefix matching.
+    'brea' → 'brea*',  'chicken brea' → 'chicken brea*'
+    Leaves the string unchanged if it already ends with a space
+    (last word is complete) or is too short.
+    """
+    stripped = text.strip()
+    if not stripped or stripped.endswith(" "):
+        return stripped
+    parts = stripped.split()
+    last  = parts[-1]
+    if len(last) >= 2 and not last.endswith("*"):
+        parts[-1] = last + "*"
+        return " ".join(parts)
+    return stripped
+
+
+def _fetch_with_fallback(query: str,
+                         data_types: list[str],
+                         target: list[dict]) -> None:
+    """
+    Try the wildcard query first (prefix matching).
+    If that returns no results or raises an exception,
+    automatically retry with the original plain query.
+    This ensures 'brea' → 'brea*' finds 'bread', 'breadcrumbs', etc.
+    while still working correctly when the wildcard form is unsupported.
+    """
+    query_wild = _add_wildcard(query)
+    attempts   = [query_wild, query] if query_wild != query else [query]
+
+    for q in attempts:
+        params = (
+            [("query", q), ("api_key", API_KEY), ("pageSize", "25")]
+            + [("dataType", dt) for dt in data_types]
+        )
+        url = f"{BASE_URL}/foods/search?" + urllib.parse.urlencode(params)
+        try:
+            with urllib.request.urlopen(url, timeout=10) as r:
+                foods = json.loads(r.read()).get("foods", [])
+            if foods:
+                target.extend(foods)
+                return          # Got results – no need to try the next variant
+        except Exception:
+            continue            # Network / API error – try next variant
+
+
+def usda_search(query: str) -> list[dict]:
+    """
+    Two parallel requests, kept strictly separate:
+      • Request 1 – Foundation + SR Legacy  (scientific / generic foods)
+      • Request 2 – Survey (FNDDS) + Branded  (survey meals & commercial products)
+
+    Foundation / SR Legacy results always appear first.
+    Each request tries a wildcard query first, with automatic plain-query fallback.
+    """
+    priority_foods: list[dict] = []
+    fallback_foods: list[dict] = []
+
+    t1 = threading.Thread(
+        target=_fetch_with_fallback,
+        args=(query, ["Foundation", "SR Legacy"], priority_foods),
+        daemon=True
+    )
+    t2 = threading.Thread(
+        target=_fetch_with_fallback,
+        args=(query, ["Survey (FNDDS)", "Branded"], fallback_foods),
+        daemon=True
+    )
+    t1.start(); t2.start()
+    t1.join();  t2.join()
+
+    top_priority = sorted(priority_foods, key=_simplicity_key)[:5]
+    top_fallback = sorted(fallback_foods, key=_simplicity_key)[:5]
+
+    # Merge keeping order: Foundation/SR Legacy first, then Survey/Branded
+    seen: set[int] = set()
+    merged: list[dict] = []
+    for food in top_priority + top_fallback:
+        fid = food.get("fdcId")
+        if fid not in seen:
+            seen.add(fid)
+            merged.append(food)
+
+    return merged[:MAX_SUGGESTIONS]
+
+
+def usda_nutrients(fdc_id: int, qty_g: float) -> dict:
+    url = f"{BASE_URL}/food/{fdc_id}?api_key={API_KEY}"
+    with urllib.request.urlopen(url, timeout=10) as r:
+        data = json.loads(r.read())
+    raw = {k: 0.0 for k in NUTRIENT_IDS}
+    for n in data.get("foodNutrients", []):
+        nobj = n.get("nutrient") or {}
+        nid  = nobj.get("id") or n.get("nutrientId") or n.get("nutrientNumber")
+        amt  = float(n.get("amount") or n.get("value") or 0)
+        for key, ids in NUTRIENT_IDS.items():
+            if nid in ids:
+                raw[key] = amt
+                break
+    f = qty_g / 100.0
+    return {k: math.ceil(v * f * 100) / 100 for k, v in raw.items()}
+
+
+def fmt_qty(value: float) -> str:
+    return format(Decimal(str(value)).normalize(), "f")
+
+
+# ─── Dropdown ─────────────────────────────────────────────────────────────────
+class Dropdown(tk.Toplevel):
+    """
+    Floating suggestion list.
+
+    Scroll support:
+      - Mac / Linux  : events go to the widget under the cursor, so we bind
+                       <MouseWheel> / <Button-4> / <Button-5> directly on canvas,
+                       inner frame, and every button.
+      - Windows      : events go to the *focused* widget (the CTkEntry); the app
+                       intercepts them in _redirect_scroll() and forwards them here
+                       when the pointer is over this window.
+    """
+    ROW_H = 38
+
+    def __init__(self, root: ctk.CTk, anchor: ctk.CTkEntry,
+                 results: list[dict], on_select):
+        super().__init__(root)
+        self.overrideredirect(True)
+        self.wm_attributes("-topmost", True)
+        self.configure(bg=COLORS["border"])
+        self._on_select = on_select
+        self._canvas: tk.Canvas | None = None
+        self._build(anchor, results)
+
+    def _build(self, anchor: ctk.CTkEntry, results: list[dict]) -> None:
+        anchor.update_idletasks()
+        w = max(anchor.winfo_width(), 300)
+        h = min(len(results) * self.ROW_H + 2, 304)
+        x = anchor.winfo_rootx()
+        y = anchor.winfo_rooty() + anchor.winfo_height() + 2
+        self.geometry(f"{w}x{h}+{x}+{y}")
+
+        canvas = tk.Canvas(self, bg=COLORS["dd_bg"], highlightthickness=0, bd=0)
+        self._canvas = canvas
+
+        if h >= 304:
+            sb = tk.Scrollbar(self, orient="vertical", command=canvas.yview)
+            canvas.configure(yscrollcommand=sb.set)
+            sb.pack(side="right", fill="y")
+        canvas.pack(fill="both", expand=True)
+
+        inner = tk.Frame(canvas, bg=COLORS["dd_bg"])
+        win   = canvas.create_window((0, 0), window=inner, anchor="nw")
+        inner.bind("<Configure>",
+                   lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>",
+                    lambda e: canvas.itemconfigure(win, width=e.width))
+
+        # Mac / Linux scroll support: bind to canvas and inner frame
+        self._bind_wheel(canvas)
+        self._bind_wheel(inner)
+
+        for i, food in enumerate(results):
+            desc = food.get("description", "")
+            bg   = COLORS["dd_even"] if i % 2 == 0 else COLORS["dd_bg"]
+            btn  = tk.Button(
+                inner, text=desc, anchor="w",
+                bg=bg, fg=COLORS["text_primary"],
+                activebackground=COLORS["dd_hover"], activeforeground="white",
+                bd=0, padx=14, pady=8,
+                font=("Segoe UI", 11), cursor="hand2",
+                justify="left", wraplength=w - 28,
+                command=lambda f=food: self._pick(f)
+            )
+            btn.pack(fill="x")
+            btn.bind("<Enter>", lambda e, b=btn:       b.configure(bg=COLORS["dd_hover"]))
+            btn.bind("<Leave>", lambda e, b=btn, c=bg: b.configure(bg=c))
+            self._bind_wheel(btn)  # Mac / Linux: bind to every button too
+
+    def _bind_wheel(self, widget: tk.BaseWidget) -> None:
+        """Bind mouse-wheel events on widget to scroll the canvas (Mac / Linux)."""
+        c = self._canvas
+
+        def _scroll_win(e):
+            c.yview_scroll(int(-1 * (e.delta / 120)), "units")
+            return "break"
+
+        def _scroll_up(e):
+            c.yview_scroll(-1, "units")
+            return "break"
+
+        def _scroll_down(e):
+            c.yview_scroll(1, "units")
+            return "break"
+
+        widget.bind("<MouseWheel>", _scroll_win)
+        widget.bind("<Button-4>",   _scroll_up)
+        widget.bind("<Button-5>",   _scroll_down)
+
+    def _pick(self, food: dict) -> None:
+        self._on_select(food)
+        try:
+            self.destroy()
+        except tk.TclError:
+            pass
+
+
+# ─── Main Application ──────────────────────────────────────────────────────────
+class NutritionalCalculator(ctk.CTk):
+
+    def __init__(self):
+        super().__init__()
+        self.title("🥗 Calcolatore Nutrizionale")
+        self.geometry("1280x780")
+        self.minsize(1000, 600)
+        self.configure(fg_color=COLORS["bg_app"])
+        self.ingredient_rows: list[dict] = []
+        self._build_layout()
+        # Force-close all dropdowns on any click in the main window
+        self.bind("<Button-1>", lambda e: self._close_all_dropdowns(force=True))
+
+    # ── Layout ────────────────────────────────────────────────────────────────
+    def _build_layout(self) -> None:
+        self.grid_columnconfigure(0, weight=4, minsize=380)
+        self.grid_columnconfigure(1, weight=6, minsize=460)
+        self.grid_rowconfigure(0, weight=1)
+        self._build_left_panel()
+        self._build_right_panel()
+
+    # ── Left panel ────────────────────────────────────────────────────────────
+    def _build_left_panel(self) -> None:
+        outer = ctk.CTkFrame(self, fg_color=COLORS["bg_panel"],
+                             corner_radius=16, border_width=1,
+                             border_color=COLORS["border"])
+        outer.grid(row=0, column=0, padx=(14, 7), pady=14, sticky="nsew")
+        outer.grid_rowconfigure(1, weight=1)
+        outer.grid_columnconfigure(0, weight=1)
+
+        hdr = ctk.CTkFrame(outer, fg_color="transparent")
+        hdr.grid(row=0, column=0, sticky="ew", padx=18, pady=(18, 6))
+        ctk.CTkLabel(hdr, text="🧾  Ingredienti",
+                     font=ctk.CTkFont("Segoe UI", 17, "bold"),
+                     text_color=COLORS["text_primary"]).pack(side="left")
+        self.count_lbl = ctk.CTkLabel(hdr, text="0 / 15",
+                                       font=ctk.CTkFont("Segoe UI", 11),
+                                       text_color=COLORS["text_secondary"])
+        self.count_lbl.pack(side="right")
+
+        self.scroll = ctk.CTkScrollableFrame(
+            outer, fg_color="transparent",
+            scrollbar_button_color=COLORS["accent"],
+            scrollbar_button_hover_color=COLORS["accent_hover"]
+        )
+        self.scroll.grid(row=1, column=0, sticky="nsew", padx=10, pady=4)
+        self.scroll.grid_columnconfigure(0, weight=0)
+        self.scroll.grid_columnconfigure(1, weight=3)
+        self.scroll.grid_columnconfigure(2, weight=2)
+        self.scroll.grid_columnconfigure(3, weight=0)
+
+        for col, txt in enumerate(["#", "Ingrediente", "Qtà (g)", ""]):
+            ctk.CTkLabel(self.scroll, text=txt,
+                         font=ctk.CTkFont("Segoe UI", 12, "bold"),
+                         text_color=COLORS["text_secondary"]
+                         ).grid(row=0, column=col, padx=(6, 4), pady=(4, 8), sticky="w")
+
+        btm = ctk.CTkFrame(outer, fg_color="transparent")
+        btm.grid(row=2, column=0, sticky="ew", padx=18, pady=(8, 18))
+        btm.grid_columnconfigure(0, weight=1)
+        btm.grid_columnconfigure(1, weight=1)
+
+        self.add_btn = ctk.CTkButton(
+            btm, text="＋  Aggiungi alimento",
+            font=ctk.CTkFont("Segoe UI", 13, "bold"),
+            height=40, corner_radius=10,
+            fg_color=COLORS["add_btn"], hover_color=COLORS["add_btn_hov"],
+            command=self._add_row
+        )
+        self.add_btn.grid(row=0, column=0, sticky="ew", padx=(0, 5), pady=(0, 8))
+
+        self.calc_btn = ctk.CTkButton(
+            btm, text="⚡  Calcola",
+            font=ctk.CTkFont("Segoe UI", 13, "bold"),
+            height=40, corner_radius=10,
+            fg_color=COLORS["accent"], hover_color=COLORS["accent_hover"],
+            command=self._on_calculate
+        )
+        self.calc_btn.grid(row=0, column=1, sticky="ew", padx=(5, 0), pady=(0, 8))
+
+        self.status_lbl = ctk.CTkLabel(
+            btm, text="Aggiungi ingredienti per iniziare.",
+            font=ctk.CTkFont("Segoe UI", 12),
+            text_color=COLORS["text_secondary"]
+        )
+        self.status_lbl.grid(row=1, column=0, columnspan=2)
+
+        self._add_row()
+
+    # ── Row management ────────────────────────────────────────────────────────
+    def _add_row(self) -> None:
+        if len(self.ingredient_rows) >= 15:
+            self._set_status("⚠  Massimo 15 ingredienti raggiunto.", COLORS["warning"])
+            return
+
+        idx = len(self.ingredient_rows)
+
+        row_frame = ctk.CTkFrame(self.scroll, fg_color="transparent")
+        row_frame.grid(row=idx + 1, column=0, columnspan=4,
+                       sticky="ew", padx=2, pady=2)
+        row_frame.grid_columnconfigure(0, weight=0)
+        row_frame.grid_columnconfigure(1, weight=3)
+        row_frame.grid_columnconfigure(2, weight=2)
+        row_frame.grid_columnconfigure(3, weight=0)
+
+        ctk.CTkLabel(row_frame, text=f"{idx + 1:02d}",
+                     font=ctk.CTkFont("Segoe UI", 12),
+                     text_color=COLORS["text_secondary"], width=30
+                     ).grid(row=0, column=0, padx=(4, 2), sticky="e")
+
+        ing_entry = ctk.CTkEntry(
+            row_frame, placeholder_text="Cerca alimento USDA…",
+            font=ctk.CTkFont("Segoe UI", 13),
+            fg_color="#1e2133", border_color=COLORS["border"],
+            text_color=COLORS["text_primary"],
+            placeholder_text_color=COLORS["text_secondary"],
+            border_width=1, corner_radius=8, height=34
+        )
+        ing_entry.grid(row=0, column=1, padx=4, sticky="ew")
+
+        qty_entry = ctk.CTkEntry(
+            row_frame, placeholder_text="g",
+            font=ctk.CTkFont("Segoe UI", 13),
+            fg_color="#1e2133", border_color=COLORS["border"],
+            text_color=COLORS["text_primary"],
+            placeholder_text_color=COLORS["text_secondary"],
+            border_width=1, corner_radius=8, height=34, width=85
+        )
+        qty_entry.grid(row=0, column=2, padx=4, sticky="w")
+
+        row: dict = {
+            "frame":            row_frame,
+            "ing_entry":        ing_entry,
+            "qty_entry":        qty_entry,
+            "fdc_id":           None,
+            "confirmed_text":   "",
+            "debounce_job":     None,
+            "dropdown":         None,
+            "search_indicator": None,
+            "search_token":     0,   # incremented on every keystroke to cancel stale results
+        }
+
+        del_btn = ctk.CTkButton(
+            row_frame, text="✕", width=30, height=30,
+            font=ctk.CTkFont("Segoe UI", 12, "bold"),
+            fg_color=COLORS["del_btn"], hover_color=COLORS["del_btn_hov"],
+            corner_radius=8, command=lambda r=row: self._remove_row(r)
+        )
+        del_btn.grid(row=0, column=3, padx=(4, 2))
+
+        # ── Entry bindings ────────────────────────────────────────────────────
+        ing_entry.bind("<KeyRelease>", lambda e, r=row: self._on_key(r))
+        ing_entry.bind("<<Paste>>",    lambda e, r=row: self.after(50, lambda: self._on_key(r)))
+        ing_entry.bind("<Escape>",     lambda e, r=row: self._close_dropdown(r, force=True))
+        ing_entry.bind("<Tab>",        lambda e, r=row: self._close_dropdown(r, force=True))
+        ing_entry.bind("<FocusOut>",   lambda e, r=row: self.after(250,
+                                                          lambda: self._close_dropdown(r)))
+
+        # Windows: wheel events land on the focused entry; redirect them to
+        # the dropdown canvas whenever the pointer is inside the dropdown.
+        ing_entry.bind("<MouseWheel>",
+                       lambda e, r=row: self._redirect_scroll(r, e.delta, "win"))
+        ing_entry.bind("<Button-4>",
+                       lambda e, r=row: self._redirect_scroll(r, None, "up"))
+        ing_entry.bind("<Button-5>",
+                       lambda e, r=row: self._redirect_scroll(r, None, "down"))
+
+        self.ingredient_rows.append(row)
+        self._refresh_numbers()
+
+        if len(self.ingredient_rows) >= 15:
+            self.add_btn.configure(state="disabled")
+
+    def _remove_row(self, row: dict) -> None:
+        self._close_dropdown(row, force=True)
+        self._hide_search_indicator(row)
+        if row in self.ingredient_rows:
+            self.ingredient_rows.remove(row)
+        row["frame"].destroy()
+        self.add_btn.configure(state="normal")
+        self._refresh_numbers()
+        self._set_status("", COLORS["text_secondary"])
+
+    def _refresh_numbers(self) -> None:
+        self.count_lbl.configure(text=f"{len(self.ingredient_rows)} / 15")
+        for i, row in enumerate(self.ingredient_rows):
+            for child in row["frame"].winfo_children():
+                if child.grid_info().get("column") == 0:
+                    child.configure(text=f"{i + 1:02d}")
+                    break
+
+    # ── Search ────────────────────────────────────────────────────────────────
+    def _on_key(self, row: dict) -> None:
+        text = row["ing_entry"].get().strip()
+
+        # Invalidate confirmed selection when the user edits the field
+        if row["fdc_id"] and text != row["confirmed_text"]:
+            row["fdc_id"] = None
+            row["confirmed_text"] = ""
+
+        # Cancel previous debounce and advance token (invalidates running searches)
+        if row["debounce_job"]:
+            self.after_cancel(row["debounce_job"])
+            row["debounce_job"] = None
+        row["search_token"] += 1
+
+        if len(text) < 2:
+            self._close_dropdown(row, force=True)
+            self._hide_search_indicator(row)
+            return
+
+        row["debounce_job"] = self.after(420, lambda q=text: self._do_search(row, q))
+
+    def _do_search(self, row: dict, query: str) -> None:
+        token = row["search_token"]
+        self._show_search_indicator(row)   # ← "Ricerca in corso…"
+
+        def _bg() -> None:
+            try:
+                results = usda_search(query)
+            except Exception:
+                results = []
+            self.after(0, lambda r=results, t=token: self._on_search_done(row, r, t))
+
+        threading.Thread(target=_bg, daemon=True).start()
+
+    def _on_search_done(self, row: dict, results: list, token: int) -> None:
+        if token != row["search_token"]:
+            return  # Stale result from a superseded query – discard
+        self._hide_search_indicator(row)
+        if results:
+            self._show_dropdown(row, results)
+
+    # ── Search indicator ──────────────────────────────────────────────────────
+    def _show_search_indicator(self, row: dict) -> None:
+        """Show a small 'Ricerca in corso…' banner below the entry."""
+        self._hide_search_indicator(row)
+        self._close_dropdown(row, force=True)
+        ing = row["ing_entry"]
+        try:
+            ing.update_idletasks()
+            x = ing.winfo_rootx()
+            y = ing.winfo_rooty() + ing.winfo_height() + 2
+            w = max(ing.winfo_width(), 220)
+
+            ind = tk.Toplevel(self)
+            ind.overrideredirect(True)
+            ind.wm_attributes("-topmost", True)
+            ind.configure(bg=COLORS["border"])
+            ind.geometry(f"{w}x34+{x}+{y}")
+
+            tk.Label(
+                ind, text="  🔍  Ricerca in corso…",
+                bg=COLORS["dd_bg"], fg=COLORS["text_secondary"],
+                font=("Segoe UI", 11), anchor="w"
+            ).pack(fill="both", expand=True, padx=1, pady=1)
+
+            row["search_indicator"] = ind
+        except Exception:
+            pass
+
+    def _hide_search_indicator(self, row: dict) -> None:
+        ind = row.get("search_indicator")
+        if ind:
+            try:
+                ind.destroy()
+            except tk.TclError:
+                pass
+            row["search_indicator"] = None
+
+    # ── Dropdown management ───────────────────────────────────────────────────
+    def _redirect_scroll(self, row: dict, delta, direction: str):
+        """
+        Windows fix: the focused entry receives wheel events even when the
+        pointer is over the dropdown Toplevel. Forward those events to the
+        dropdown canvas when the cursor is inside its bounds.
+        """
+        dd = row.get("dropdown")
+        if not dd:
+            return None
+        try:
+            if not dd.winfo_exists():
+                return None
+            px, py = self.winfo_pointerx(), self.winfo_pointery()
+            dx, dy = dd.winfo_rootx(), dd.winfo_rooty()
+            dw, dh = dd.winfo_width(), dd.winfo_height()
+            if dx <= px < dx + dw and dy <= py < dy + dh:
+                c = dd._canvas
+                if direction == "win":
+                    c.yview_scroll(int(-1 * (delta / 120)), "units")
+                elif direction == "up":
+                    c.yview_scroll(-1, "units")
+                else:
+                    c.yview_scroll(1, "units")
+                return "break"
+        except tk.TclError:
+            pass
+        return None
+
+    def _show_dropdown(self, row: dict, results: list) -> None:
+        self._close_dropdown(row, force=True)
+        if not results:
+            return
+        ing = row["ing_entry"]
+
+        def on_select(food: dict) -> None:
+            row["fdc_id"]         = food["fdcId"]
+            row["confirmed_text"] = food["description"]
+            row["dropdown"]       = None   # clear before Toplevel.destroy()
+            ing.delete(0, "end")
+            ing.insert(0, food["description"])
+
+        try:
+            row["dropdown"] = Dropdown(self, ing, results, on_select)
+        except Exception:
+            pass
+
+    def _close_dropdown(self, row: dict, force: bool = False) -> None:
+        dd = row.get("dropdown")
+        if not dd:
+            return
+
+        if not force:
+            # While the pointer is inside the dropdown, defer closing so that
+            # scrolling with the mouse wheel never dismisses the list.
+            try:
+                if dd.winfo_exists():
+                    px, py = self.winfo_pointerx(), self.winfo_pointery()
+                    dx, dy = dd.winfo_rootx(), dd.winfo_rooty()
+                    dw, dh = dd.winfo_width(), dd.winfo_height()
+                    if dx <= px < dx + dw and dy <= py < dy + dh:
+                        # Re-check every 300 ms until the pointer leaves
+                        self.after(300, lambda r=row: self._close_dropdown(r))
+                        return
+            except tk.TclError:
+                pass
+
+        try:
+            dd.destroy()
+        except tk.TclError:
+            pass
+        row["dropdown"] = None
+
+    def _close_all_dropdowns(self, force: bool = False) -> None:
+        for row in self.ingredient_rows:
+            self._close_dropdown(row, force=force)
+
+    # ── Right panel ───────────────────────────────────────────────────────────
+    def _build_right_panel(self) -> None:
+        outer = ctk.CTkFrame(self, fg_color=COLORS["bg_panel"],
+                             corner_radius=16, border_width=1,
+                             border_color=COLORS["border"])
+        outer.grid(row=0, column=1, padx=(7, 14), pady=14, sticky="nsew")
+        outer.grid_rowconfigure(1, weight=1)
+        outer.grid_columnconfigure(0, weight=1)
+
+        hdr = ctk.CTkFrame(outer, fg_color="transparent")
+        hdr.grid(row=0, column=0, sticky="ew", padx=18, pady=(18, 10))
+        ctk.CTkLabel(hdr, text="📊  Valori Nutrizionali",
+                     font=ctk.CTkFont("Segoe UI", 17, "bold"),
+                     text_color=COLORS["text_primary"]).pack(side="left")
+        ctk.CTkLabel(
+            hdr,
+            text="fonte: USDA FoodData Central  •  arrotondamento per eccesso ai centesimi",
+            font=ctk.CTkFont("Segoe UI", 10),
+            text_color=COLORS["text_secondary"]
+        ).pack(side="right")
+
+        self.table_scroll = ctk.CTkScrollableFrame(
+            outer, fg_color="transparent",
+            scrollbar_button_color=COLORS["accent"],
+            scrollbar_button_hover_color=COLORS["accent_hover"]
+        )
+        self.table_scroll.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 12))
+
+        for c, w in enumerate([3, 1, 1, 1, 1, 1, 1]):
+            self.table_scroll.grid_columnconfigure(c, weight=w, minsize=70)
+
+        self._draw_table_header()
+        self._draw_placeholder()
+
+    def _draw_table_header(self) -> None:
+        headers = ["Ingrediente", "Qtà (g)", "Calorie\n(kcal)", "Proteine\n(g)",
+                   "Lipidi\n(g)", "Sodio\n(mg)", "Fibre\n(g)"]
+        for col, txt in enumerate(headers):
+            ctk.CTkLabel(
+                self.table_scroll, text=txt,
+                font=ctk.CTkFont("Segoe UI", 12, "bold"),
+                fg_color=COLORS["bg_header"], text_color="white",
+                corner_radius=6, justify="center"
+            ).grid(row=0, column=col, padx=1, pady=(0, 3),
+                   sticky="ew", ipadx=6, ipady=6)
+
+    def _draw_placeholder(self) -> None:
+        ctk.CTkLabel(
+            self.table_scroll,
+            text="Cerca e seleziona gli ingredienti dal database USDA,\npoi premi «⚡ Calcola»",
+            font=ctk.CTkFont("Segoe UI", 13),
+            text_color=COLORS["text_secondary"], justify="center"
+        ).grid(row=1, column=0, columnspan=7, pady=70, sticky="ew")
+
+    def _reset_table(self) -> None:
+        for w in self.table_scroll.winfo_children():
+            w.destroy()
+        self._draw_table_header()
+        self._draw_placeholder()
+
+    # ── Calculation ───────────────────────────────────────────────────────────
+    def _on_calculate(self) -> None:
+        self._close_all_dropdowns(force=True)
+        to_fetch: list[dict] = []
+
+        for row in self.ingredient_rows:
+            name = row["ing_entry"].get().strip()
+            qty  = row["qty_entry"].get().strip()
+            if not name and not qty:
+                continue
+            if not name:
+                self._reset_table()
+                self._set_status("⚠  Inserisci il nome di tutti gli ingredienti.",
+                                 COLORS["warning"])
+                return
+            if not qty:
+                self._reset_table()
+                self._set_status(f"⚠  Quantità mancante per «{name}».", COLORS["warning"])
+                return
+            try:
+                qty_val = float(qty.replace(",", "."))
+            except ValueError:
+                self._reset_table()
+                self._set_status(f"⚠  Quantità non valida per «{name}».", COLORS["warning"])
+                return
+            if qty_val <= 0:
+                self._reset_table()
+                self._set_status(f"⚠  La quantità di «{name}» deve essere > 0.",
+                                 COLORS["warning"])
+                return
+            if not row["fdc_id"]:
+                self._reset_table()
+                self._set_status(
+                    f"⚠  Seleziona «{name}» dall'elenco suggerimenti.", COLORS["warning"])
+                return
+            to_fetch.append({"name": name, "quantity": qty_val, "fdc_id": row["fdc_id"]})
+
+        if not to_fetch:
+            self._reset_table()
+            self._set_status("⚠  Inserisci almeno un ingrediente.", COLORS["warning"])
+            return
+
+        self.calc_btn.configure(state="disabled", text="⏳  Recupero dati…")
+        self._set_status("Connessione a USDA FoodData Central…", COLORS["warning"])
+        threading.Thread(target=self._fetch_all, args=(to_fetch,), daemon=True).start()
+
+    def _fetch_all(self, to_fetch: list[dict]) -> None:
+        results, errors = [], []
+        for item in to_fetch:
+            try:
+                nuts = usda_nutrients(item["fdc_id"], item["quantity"])
+                results.append({"name": item["name"], "quantity": item["quantity"], **nuts})
+            except Exception:
+                errors.append(item["name"])
+        self.after(0, lambda: self._finish(results, errors))
+
+    def _finish(self, results: list, errors: list) -> None:
+        self.calc_btn.configure(state="normal", text="⚡  Calcola")
+        if errors:
+            self._reset_table()
+            self._set_status(
+                f"⚠  Errore nel recupero dati per: {', '.join(errors)}", COLORS["error"])
+            return
+        self._render_results(results)
+
+    # ── Rendering ─────────────────────────────────────────────────────────────
+    def _render_results(self, rows: list[dict]) -> None:
+        for w in self.table_scroll.winfo_children():
+            w.destroy()
+        self._draw_table_header()
+
+        totals = {k: 0.0 for k in
+                  ("quantity", "calories", "proteins", "lipids", "sodium", "fibers")}
+
+        for i, row in enumerate(rows):
+            bg = COLORS["bg_row_even"] if i % 2 == 0 else COLORS["bg_row_odd"]
+            for key in totals:
+                totals[key] += row[key]
+
+            vals = [
+                row["name"],               fmt_qty(row["quantity"]),
+                f"{row['calories']:.2f}",  f"{row['proteins']:.2f}",
+                f"{row['lipids']:.2f}",    f"{row['sodium']:.2f}",
+                f"{row['fibers']:.2f}",
+            ]
+            for col, val in enumerate(vals):
+                ctk.CTkLabel(
+                    self.table_scroll, text=val,
+                    font=ctk.CTkFont("Segoe UI", 12),
+                    fg_color=bg, text_color=COLORS["text_primary"],
+                    corner_radius=0,
+                    anchor="w" if col == 0 else "center",
+                    justify="left" if col == 0 else "center"
+                ).grid(row=i + 1, column=col, padx=1, pady=1,
+                       sticky="ew", ipadx=8, ipady=5)
+
+        for key in totals:
+            totals[key] = math.ceil(totals[key] * 100) / 100
+
+        tv = [
+            "TOTALE",                    fmt_qty(totals["quantity"]),
+            f"{totals['calories']:.2f}", f"{totals['proteins']:.2f}",
+            f"{totals['lipids']:.2f}",   f"{totals['sodium']:.2f}",
+            f"{totals['fibers']:.2f}",
+        ]
+        for col, val in enumerate(tv):
+            ctk.CTkLabel(
+                self.table_scroll, text=val,
+                font=ctk.CTkFont("Segoe UI", 13, "bold"),
+                fg_color=COLORS["bg_total"], text_color="white",
+                corner_radius=4,
+                anchor="w" if col == 0 else "center",
+                justify="left" if col == 0 else "center"
+            ).grid(row=len(rows) + 1, column=col, padx=1, pady=(5, 2),
+                   sticky="ew", ipadx=8, ipady=7)
+
+        n = len(rows)
+        self._set_status(
+            f"✅  {n} ingredient{'e' if n == 1 else 'i'} calcolat{'o' if n == 1 else 'i'}.",
+            COLORS["success"]
+        )
+
+    # ── Helpers ───────────────────────────────────────────────────────────────
+    def _set_status(self, text: str, color: str) -> None:
+        self.status_lbl.configure(text=text, text_color=color)
+
+
+# ─── Entry point ──────────────────────────────────────────────────────────────
+if __name__ == "__main__":
+    app = NutritionalCalculator()
+    app.mainloop()
