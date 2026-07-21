@@ -1,4 +1,4 @@
-# LLMs Case Studies
+# LLM Case Studies for Bachelor's Degree
 
 Large Language Models (LLMs) comparison project developed as part of my Bachelor's internship and thesis.
 
